@@ -84,8 +84,18 @@ pub async fn ban(
         if seconds > 0 {
             let threshold_time = SystemTime::now() - Duration::from_secs(seconds as u64);
 
-            Message::bulk_delete_by_author_since(db, &server.channels, target.id, threshold_time)
-                .await?;
+            // Threads are not listed on the server, so sweep them as well
+            let mut channels = server.channels.clone();
+            for parent in &server.channels {
+                channels.extend(
+                    db.fetch_threads(parent, None)
+                        .await?
+                        .into_iter()
+                        .map(|thread| thread.id().to_string()),
+                );
+            }
+
+            Message::bulk_delete_by_author_since(db, &channels, target.id, threshold_time).await?;
         }
     }
 

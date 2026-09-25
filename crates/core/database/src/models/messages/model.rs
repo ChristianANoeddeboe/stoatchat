@@ -547,13 +547,54 @@ impl Message {
 
                         if !user_mentions.is_empty() {
                             // if there are still mentions, drill down to a channel-level
-                            let member_channel_view_perms =
+                            let mut member_channel_view_perms =
                                 BulkDatabasePermissionQuery::from_server_id(db, server)
                                     .await
                                     .channel(&channel)
                                     .members(&valid_members)
                                     .members_can_see_channel()
                                     .await;
+
+                            // Mentioning someone outside a private thread brings them in, like
+                            // Discord, as long as the author may add people to it
+                            if let Channel::Thread {
+                                private: true,
+                                invitable,
+                                parent,
+                                ..
+                            } = &channel
+                            {
+                                let outsiders = valid_members
+                                    .iter()
+                                    .filter(|m| {
+                                        user_mentions.contains(&m.id.user)
+                                            && !*member_channel_view_perms
+                                                .get(&m.id.user)
+                                                .unwrap_or(&false)
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+
+                                if !outsiders.is_empty()
+                                    && Message::can_invite_to_thread(
+                                        db, server, &channel, *invitable, &author,
+                                    )
+                                    .await?
+                                {
+                                    let parent = db.fetch_channel(parent).await?;
+                                    let parent_view_perms =
+                                        BulkDatabasePermissionQuery::from_server_id(db, server)
+                                            .await
+                                            .channel(&parent)
+                                            .members(&outsiders)
+                                            .members_can_see_channel()
+                                            .await;
+
+                                    member_channel_view_perms.extend(
+                                        parent_view_perms.into_iter().filter(|(_, view)| *view),
+                                    );
+                                }
+                            }
 
                             user_mentions
                                 .retain(|m| *member_channel_view_perms.get(m).unwrap_or(&false));
@@ -757,7 +798,12 @@ impl Message {
                 }
             }
 
-            // Mentioned users outside of the thread still get notified
+            // Mentioned users outside of the thread join it, like Discord. Mentions were
+            // validated when the message was created, so they are allowed to see it.
+            for user in &mentions {
+                channel.add_thread_member(db, user).await?;
+            }
+
             recipients.extend(mentions);
             Some(recipients)
         } else {
@@ -1094,6 +1140,8 @@ impl Message {
         }
         .p(self.channel.clone())
         .await;
+
+        Message::remove_from_thread_count(db, &self.channel, std::slice::from_ref(&self.id)).await;
         Ok(())
     }
 
@@ -1108,6 +1156,8 @@ impl Message {
             .collect::<Vec<String>>();
 
         db.delete_messages(channel, &valid_ids).await?;
+        Message::remove_from_thread_count(db, channel, &valid_ids).await;
+
         EventV1::BulkMessageDelete {
             channel: channel.to_string(),
             ids: valid_ids,
@@ -1130,6 +1180,8 @@ impl Message {
 
         for (channel_id, message_ids) in deleted_groups {
             if !message_ids.is_empty() {
+                Message::remove_from_thread_count(db, &channel_id, &message_ids).await;
+
                 EventV1::BulkMessageDelete {
                     channel: channel_id.clone(),
                     ids: message_ids,
@@ -1140,6 +1192,68 @@ impl Message {
         }
 
         Ok(())
+    }
+
+    /// Whether the author of a message may add other people to a private thread
+    ///
+    /// Mirrors the rules of the add thread member route.
+    async fn can_invite_to_thread(
+        db: &Database,
+        server: &str,
+        thread: &Channel,
+        invitable: bool,
+        author: &MessageAuthor<'_>,
+    ) -> Result<bool> {
+        if invitable {
+            return Ok(true);
+        }
+
+        let MessageAuthor::User(user) = author else {
+            return Ok(false);
+        };
+
+        let Ok(member) = db.fetch_member(server, &user.id).await else {
+            return Ok(false);
+        };
+
+        let members = [member];
+        let permissions = BulkDatabasePermissionQuery::from_server_id(db, server)
+            .await
+            .channel(thread)
+            .members(&members)
+            .members_permissions()
+            .await;
+
+        Ok(permissions
+            .get(&user.id)
+            .is_some_and(|p| p.has_channel_permission(ChannelPermission::ManageThreads)))
+    }
+
+    /// Lower a thread's message count after messages were deleted from it and tell clients
+    ///
+    /// Does nothing for channels that are not threads. The starter message is never counted.
+    async fn remove_from_thread_count(db: &Database, channel: &str, deleted: &[String]) {
+        let removed = deleted.iter().filter(|id| *id != channel).count();
+        if removed == 0 {
+            return;
+        }
+
+        if let Ok(thread) = db
+            .add_to_thread_counts(channel, -(removed as i32), 0)
+            .await
+        {
+            EventV1::ChannelUpdate {
+                id: channel.to_string(),
+                data: crate::PartialChannel {
+                    message_count: Some(thread.thread_message_count()),
+                    ..Default::default()
+                }
+                .into(),
+                clear: vec![],
+            }
+            .p(thread.server().unwrap_or(channel).to_string())
+            .await;
+        }
     }
 
     /// Remove a reaction from a message

@@ -510,3 +510,170 @@ async fn locked_and_archived_threads() {
     drop(response);
 
 }
+
+async fn thread_member_ids(harness: &TestHarness, id: &str) -> Vec<String> {
+    harness
+        .db
+        .fetch_thread_members(id)
+        .await
+        .expect("members")
+        .into_iter()
+        .map(|m| m.id.user)
+        .collect()
+}
+
+#[rocket::async_test]
+async fn mentions_join_private_threads() {
+    let harness = TestHarness::new().await;
+    let (_, session, owner) = harness.new_user().await;
+    let (_, other_session, other) = harness.new_user().await;
+    let (_, _, third) = harness.new_user().await;
+    let (_, _, fourth) = harness.new_user().await;
+    let (server, channels) = harness.new_server(&owner).await;
+    let channel = &channels[0];
+    join(&harness, &server, &owner).await;
+    join(&harness, &server, &other).await;
+    join(&harness, &server, &third).await;
+    join(&harness, &server, &fourth).await;
+
+    let create = |invitable: bool| {
+        post(
+            &harness,
+            &other_session,
+            format!("/channels/{}/threads", channel.id()),
+            serde_json::json!({ "name": "Secret", "private": true, "invitable": invitable }),
+        )
+    };
+
+    // A member of an invitable thread can bring people in by mentioning them
+    let thread: v0::Channel = create(true).await.into_json().await.expect("thread");
+    let response = post(
+        &harness,
+        &other_session,
+        format!("/channels/{}/messages", thread.id()),
+        serde_json::json!({ "content": format!("hey <@{}>", third.id) }),
+    )
+    .await;
+    assert_eq!(response.status(), Status::Ok);
+    let message: v0::Message = response.into_json().await.expect("message");
+    assert_eq!(message.mentions, Some(vec![third.id.clone()]));
+    assert!(thread_member_ids(&harness, thread.id()).await.contains(&third.id));
+
+    // Without invitable, only people with ManageThreads can
+    let thread: v0::Channel = create(false).await.into_json().await.expect("thread");
+    let response = post(
+        &harness,
+        &other_session,
+        format!("/channels/{}/messages", thread.id()),
+        serde_json::json!({ "content": format!("hey <@{}>", third.id) }),
+    )
+    .await;
+    let message: v0::Message = response.into_json().await.expect("message");
+    assert_eq!(message.mentions, None);
+    assert!(!thread_member_ids(&harness, thread.id()).await.contains(&third.id));
+
+    let response = post(
+        &harness,
+        &session,
+        format!("/channels/{}/messages", thread.id()),
+        serde_json::json!({ "content": format!("hey <@{}>", fourth.id) }),
+    )
+    .await;
+    let message: v0::Message = response.into_json().await.expect("message");
+    assert_eq!(message.mentions, Some(vec![fourth.id.clone()]));
+    assert!(thread_member_ids(&harness, thread.id()).await.contains(&fourth.id));
+}
+
+#[rocket::async_test]
+async fn deleting_messages_updates_thread_count() {
+    let harness = TestHarness::new().await;
+    let (_, session, user) = harness.new_user().await;
+    let (_, other_session, other) = harness.new_user().await;
+    let (server, channels) = harness.new_server(&user).await;
+    let channel = &channels[0];
+    join(&harness, &server, &other).await;
+
+    let thread: v0::Channel = post(
+        &harness,
+        &session,
+        format!("/channels/{}/threads", channel.id()),
+        serde_json::json!({ "name": "Counting" }),
+    )
+    .await
+    .into_json()
+    .await
+    .expect("thread");
+
+    let mut ids = vec![];
+    for i in 0..4 {
+        let message: v0::Message = post(
+            &harness,
+            &session,
+            format!("/channels/{}/messages", thread.id()),
+            serde_json::json!({ "content": format!("message {i}") }),
+        )
+        .await
+        .into_json()
+        .await
+        .expect("message");
+        ids.push(message.id);
+    }
+
+    let count = || async {
+        harness
+            .db
+            .fetch_channel(thread.id())
+            .await
+            .expect("thread")
+            .thread_message_count()
+    };
+    assert_eq!(count().await, 4);
+
+    let response = harness
+        .client
+        .delete(format!("/channels/{}/messages/{}", thread.id(), ids[0]))
+        .header(Header::new("x-session-token", session.token.clone()))
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), Status::NoContent);
+    drop(response);
+    assert_eq!(count().await, 3);
+
+    let response = harness
+        .client
+        .delete(format!("/channels/{}/messages/bulk", thread.id()))
+        .header(Header::new("x-session-token", session.token.clone()))
+        .header(ContentType::JSON)
+        .body(serde_json::json!({ "ids": [ids[1], ids[2]] }).to_string())
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), Status::NoContent);
+    drop(response);
+    assert_eq!(count().await, 1);
+
+    // Banning with message deletion sweeps threads too
+    let other_message: v0::Message = post(
+        &harness,
+        &other_session,
+        format!("/channels/{}/messages", thread.id()),
+        serde_json::json!({ "content": "spam" }),
+    )
+    .await
+    .into_json()
+    .await
+    .expect("message");
+    assert_eq!(count().await, 2);
+
+    let response = harness
+        .client
+        .put(format!("/servers/{}/bans/{}", server.id, other.id))
+        .header(Header::new("x-session-token", session.token.clone()))
+        .header(ContentType::JSON)
+        .body(serde_json::json!({ "delete_message_seconds": 3600 }).to_string())
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), Status::Ok);
+    drop(response);
+    assert!(harness.db.fetch_message(&other_message.id).await.is_err());
+    assert_eq!(count().await, 1);
+}

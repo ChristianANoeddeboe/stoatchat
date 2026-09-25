@@ -594,6 +594,14 @@ impl Channel {
         }
     }
 
+    /// Number of messages in a thread, excluding the starter message
+    pub fn thread_message_count(&self) -> u32 {
+        match self {
+            Channel::Thread { message_count, .. } => *message_count,
+            _ => 0,
+        }
+    }
+
     /// Create a group
     pub async fn create_group(
         db: &Database,

@@ -58,6 +58,18 @@ impl<'z, 'x> BulkDatabasePermissionQuery<'x> {
         };
         member_perms
     }
+
+    /// Calculate the full channel permissions of each member
+    pub async fn members_permissions(&'z mut self) -> HashMap<String, PermissionValue>
+    where
+        'z: 'x,
+    {
+        if let Some(perms) = &self.cached_member_perms {
+            return perms.clone();
+        }
+
+        calculate_members_permissions(self).await
+    }
 }
 
 impl<'z> BulkDatabasePermissionQuery<'z> {

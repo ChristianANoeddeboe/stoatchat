@@ -446,12 +446,17 @@ impl AbstractChannels for MongoDb {
         self.col::<Channel>(COL)
             .find_one_and_update(
                 doc! { "_id": thread_id, "channel_type": "Thread" },
-                doc! {
-                    "$inc": {
-                        "message_count": messages,
-                        "member_count": members,
+                // Pipeline update so the counts can never drop below zero
+                vec![doc! {
+                    "$set": {
+                        "message_count": {
+                            "$max": [0, { "$add": [{ "$ifNull": ["$message_count", 0] }, messages] }]
+                        },
+                        "member_count": {
+                            "$max": [0, { "$add": [{ "$ifNull": ["$member_count", 0] }, members] }]
+                        },
                     }
-                },
+                }],
             )
             .return_document(ReturnDocument::After)
             .await
