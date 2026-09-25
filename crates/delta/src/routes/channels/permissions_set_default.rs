@@ -55,6 +55,12 @@ pub async fn set_default_channel_permissions(
             server,
             default_permissions,
             ..
+        }
+        | Channel::ForumChannel {
+            id,
+            server,
+            default_permissions,
+            ..
         } => {
             if let DataDefaultChannelPermissions::Field { permissions: field } = data {
                 permissions

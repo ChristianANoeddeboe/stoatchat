@@ -63,6 +63,10 @@ macro_rules! auto_derived_partial {
 pub mod v0;
 
 /// Utility function to check if a boolean value is false
+pub fn default_true() -> bool {
+    true
+}
+
 pub fn if_false(t: &bool) -> bool {
     !t
 }

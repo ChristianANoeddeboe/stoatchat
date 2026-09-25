@@ -1,6 +1,6 @@
 use crate::{
     calculate_channel_permissions, calculate_user_permissions, ChannelPermission, ChannelType,
-    Override, PermissionQuery, RelationshipStatus, DEFAULT_PERMISSION_DIRECT_MESSAGE,
+    Override, PermissionQuery, RelationshipStatus, ThreadState, DEFAULT_PERMISSION_DIRECT_MESSAGE,
     DEFAULT_PERMISSION_SERVER, DEFAULT_PERMISSION_VIEW_ONLY,
 };
 
@@ -74,6 +74,10 @@ async fn validate_user_permissions() {
 
         async fn get_channel_type(&mut self) -> ChannelType {
             ChannelType::DirectMessage
+        }
+
+        async fn get_thread_state(&mut self) -> ThreadState {
+            unreachable!()
         }
 
         async fn get_default_channel_permissions(&mut self) -> Override {
@@ -171,6 +175,10 @@ async fn validate_group_permissions() {
 
         async fn get_channel_type(&mut self) -> ChannelType {
             ChannelType::Group
+        }
+
+        async fn get_thread_state(&mut self) -> ThreadState {
+            unreachable!()
         }
 
         async fn get_default_channel_permissions(&mut self) -> Override {
@@ -282,6 +290,10 @@ async fn validate_server_permissions() {
             ChannelType::ServerChannel
         }
 
+        async fn get_thread_state(&mut self) -> ThreadState {
+            unreachable!()
+        }
+
         async fn get_default_channel_permissions(&mut self) -> Override {
             Override {
                 allow: 0,
@@ -380,6 +392,10 @@ async fn validate_timed_out_member() {
 
         async fn get_channel_type(&mut self) -> ChannelType {
             ChannelType::ServerChannel
+        }
+
+        async fn get_thread_state(&mut self) -> ThreadState {
+            unreachable!()
         }
 
         async fn get_default_channel_permissions(&mut self) -> Override {

@@ -66,7 +66,34 @@ pub async fn delete(
                 remove_user_from_voice_channel(voice_client, &user_voice_channel, &user.id).await?;
             };
         }
-        Channel::TextChannel { name, server, .. } => {
+        Channel::Thread {
+            name,
+            server,
+            parent,
+            owner,
+            ..
+        } => {
+            // Forum posts may be deleted by their author
+            let is_own_post = owner == &user.id
+                && matches!(
+                    db.fetch_channel(parent).await?,
+                    Channel::ForumChannel { .. }
+                );
+
+            if !is_own_post {
+                permissions.throw_if_lacking_channel_permission(ChannelPermission::ManageThreads)?;
+            }
+
+            channel.delete(db).await?;
+
+            AuditLogEntryAction::ChannelDelete {
+                channel: channel.id().to_string(),
+                name: name.clone(),
+            }
+            .insert(db, server.clone(), reason, user.id, None)
+            .await;
+        }
+        Channel::TextChannel { name, server, .. } | Channel::ForumChannel { name, server, .. } => {
             permissions.throw_if_lacking_channel_permission(ChannelPermission::ManageChannel)?;
             channel.delete(db).await?;
 

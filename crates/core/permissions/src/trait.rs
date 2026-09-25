@@ -1,4 +1,4 @@
-use crate::{ChannelType, Override, RelationshipStatus};
+use crate::{ChannelType, Override, RelationshipStatus, ThreadState};
 
 #[async_trait]
 pub trait PermissionQuery {
@@ -50,7 +50,12 @@ pub trait PermissionQuery {
     /// Get the type of the channel
     async fn get_channel_type(&mut self) -> ChannelType;
 
+    /// Get the state of the thread, if the channel is a thread
+    /// (this will only ever be called for threads, use unimplemented!() for other code paths)
+    async fn get_thread_state(&mut self) -> ThreadState;
+
     /// Get the default channel permissions
+    /// Threads should return the permissions of their parent channel
     /// Group channel defaults should be mapped to an allow-only override
     async fn get_default_channel_permissions(&mut self) -> Override;
 

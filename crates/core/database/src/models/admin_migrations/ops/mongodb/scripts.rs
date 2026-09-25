@@ -26,7 +26,7 @@ struct MigrationInfo {
     revision: i32,
 }
 
-pub const LATEST_REVISION: i32 = 52; // MUST BE +1 to last migration
+pub const LATEST_REVISION: i32 = 53; // MUST BE +1 to last migration
 
 pub async fn migrate_database(db: &MongoDb) {
     let migrations = db.col::<Document>("migrations");
@@ -1494,6 +1494,78 @@ pub async fn run_migrations(db: &MongoDb, revision: i32) -> i32 {
                 panic!("Failed to rename invites collection: {e}");
             }
         }
+    }
+
+    if revision <= 52 {
+        info!("Running migration [revision 52 / 25-09-2026]: Add forum channels and threads");
+
+        db.db()
+            .create_collection("thread_members")
+            .await
+            .ok();
+
+        db.db()
+            .run_command(doc! {
+                "createIndexes": "thread_members",
+                "indexes": [
+                    {
+                        "key": {
+                            "_id.thread": 1_i32,
+                            "_id.user": 1_i32,
+                        },
+                        "name": "compound_id"
+                    },
+                    {
+                        "key": {
+                            "_id.user": 1_i32,
+                        },
+                        "name": "user_id"
+                    }
+                ]
+            })
+            .await
+            .expect("Failed to create thread_members index.");
+
+        db.db()
+            .run_command(doc! {
+                "createIndexes": "channels",
+                "indexes": [
+                    {
+                        "key": {
+                            "parent": 1_i32,
+                            "archived": 1_i32,
+                            "archived_at": -1_i32,
+                        },
+                        "name": "thread_parent"
+                    },
+                    {
+                        "key": {
+                            "channel_type": 1_i32,
+                            "archived": 1_i32,
+                            "server": 1_i32,
+                        },
+                        "name": "active_threads"
+                    }
+                ]
+            })
+            .await
+            .expect("Failed to create channels thread index.");
+
+        // Everyone may create and talk in threads by default, like Discord
+        db.db()
+            .collection::<Document>("servers")
+            .update_many(
+                doc! {},
+                doc! {
+                    "$bit": {
+                        "default_permissions": {
+                            "or": ((1_i64 << 48) | (1_i64 << 49) | (1_i64 << 50))
+                        }
+                    }
+                },
+            )
+            .await
+            .expect("Failed to add thread permissions to servers");
     }
 
     if revision >= 51 {

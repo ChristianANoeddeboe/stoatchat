@@ -106,6 +106,7 @@ mod test {
                 voice: None,
                 slowmode: None,
                 remove: Vec::new(),
+                ..Default::default()
             })
             .dispatch()
             .await
@@ -128,6 +129,7 @@ mod test {
                 voice: None,
                 slowmode: None,
                 remove: Vec::new(),
+                ..Default::default()
             })
             .dispatch()
             .await

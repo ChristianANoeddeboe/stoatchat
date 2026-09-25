@@ -24,6 +24,11 @@ mod message_unpin;
 mod message_unreact;
 mod permissions_set;
 mod permissions_set_default;
+mod thread_create;
+mod thread_list;
+mod thread_members;
+#[cfg(test)]
+mod thread_tests;
 mod voice_join;
 mod voice_stop_ring;
 mod webhook_create;
@@ -58,5 +63,14 @@ pub fn routes() -> (Vec<Route>, OpenApi) {
         message_clear_reactions::clear_reactions,
         webhook_create::create_webhook,
         webhook_fetch_all::fetch_webhooks,
+        thread_create::create_thread_from_message,
+        thread_create::create_thread,
+        thread_list::list_active_threads,
+        thread_list::list_archived_threads,
+        thread_list::search_threads,
+        thread_members::fetch_thread_members,
+        thread_members::add_thread_member,
+        thread_members::remove_thread_member,
+        thread_members::edit_thread_member,
     ]
 }

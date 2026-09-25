@@ -21,7 +21,9 @@ impl Cache {
     pub async fn can_view_channel(&self, db: &Database, channel: &Channel) -> bool {
         #[allow(deprecated)]
         match &channel {
-            Channel::TextChannel { server, .. } => {
+            Channel::TextChannel { server, .. }
+            | Channel::ForumChannel { server, .. }
+            | Channel::Thread { server, .. } => {
                 let member = self.members.get(server);
                 let server = self.servers.get(server);
                 let mut query =
@@ -35,6 +37,14 @@ impl Cache {
 
                 if let Some(server) = server {
                     query = query.server(server);
+                }
+
+                if let Channel::Thread { id, parent, .. } = channel {
+                    query = query.thread_member(self.thread_members.contains(id));
+
+                    if let Some(parent) = self.channels.get(parent) {
+                        query = query.parent(parent);
+                    }
                 }
 
                 calculate_channel_permissions(&mut query)
@@ -142,7 +152,38 @@ impl State {
         channels.append(&mut db.fetch_channels(&channel_ids).await?);
 
         // Filter server channels by permission.
-        let channels = self.cache.filter_accessible_channels(db, channels).await;
+        let mut channels = self.cache.filter_accessible_channels(db, channels).await;
+
+        // Fetch active threads in visible channels, filtered by permission.
+        let memberships = db.fetch_thread_memberships(&user.id).await?;
+        self.cache.thread_members = memberships.iter().map(|m| m.id.thread.clone()).collect();
+
+        let visible_ids: HashSet<String> = channels.iter().map(|c| c.id().to_string()).collect();
+        let threads: Vec<Channel> = db
+            .fetch_active_threads(&server_ids)
+            .await?
+            .into_iter()
+            .filter(|thread| thread.parent().is_some_and(|p| visible_ids.contains(p)))
+            .collect();
+
+        // Parents must be cached to calculate thread permissions
+        self.cache.channels = channels
+            .iter()
+            .cloned()
+            .map(|x| (x.id().to_string(), x))
+            .collect();
+
+        channels.append(&mut self.cache.filter_accessible_channels(db, threads).await);
+
+        let thread_members: Vec<v0::ThreadMember> = memberships
+            .into_iter()
+            .filter(|m| {
+                channels
+                    .iter()
+                    .any(|c| c.is_thread() && c.id() == m.id.thread)
+            })
+            .map(Into::into)
+            .collect();
 
         // Append known user IDs from DMs.
         for channel in &channels {
@@ -322,6 +363,11 @@ impl State {
                 None
             },
             voice_states,
+            thread_members: if fields.channels {
+                Some(thread_members)
+            } else {
+                None
+            },
 
             emojis,
             user_settings,
@@ -389,6 +435,21 @@ impl State {
                 }
             }
 
+            // Threads are not listed on the server, look for any we can now see
+            if let Ok(threads) = db.fetch_active_threads(std::slice::from_ref(id)).await {
+                let threads = threads
+                    .into_iter()
+                    .filter(|thread| !self.cache.channels.contains_key(thread.id()))
+                    .collect();
+
+                for thread in self.cache.filter_accessible_channels(db, threads).await {
+                    let thread_id = thread.id().to_string();
+                    self.cache.channels.insert(thread_id.clone(), thread.clone());
+                    self.insert_subscription(thread_id).await;
+                    bulk_events.push(EventV1::ChannelCreate(thread.into()));
+                }
+            }
+
             if !bulk_events.is_empty() {
                 let mut new_event = EventV1::Bulk { v: bulk_events };
                 std::mem::swap(&mut new_event, event);
@@ -397,6 +458,23 @@ impl State {
                     v.push(new_event);
                 }
             }
+        }
+    }
+
+    /// Forget all cached channels (including threads) of a server
+    async fn remove_server_channels(&mut self, server_id: &str) {
+        let ids: Vec<String> = self
+            .cache
+            .channels
+            .iter()
+            .filter(|(_, channel)| channel.server() == Some(server_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in ids {
+            self.remove_subscription(&id).await;
+            self.cache.channels.remove(&id);
+            self.cache.thread_members.remove(&id);
         }
     }
 
@@ -458,11 +536,19 @@ impl State {
         let mut queue_add = None;
         let mut queue_remove = None;
 
+        // Or re-check whether we can see a thread.
+        let mut queue_thread = None;
+
         match event {
             EventV1::ChannelCreate(channel) => {
+                let channel: Channel = channel.clone().into();
+                if channel.server().is_some() && !self.cache.can_view_channel(db, &channel).await {
+                    return false;
+                }
+
                 let id = channel.id().to_string();
                 self.insert_subscription(id.clone()).await;
-                self.cache.channels.insert(id, channel.clone().into());
+                self.cache.channels.insert(id, channel);
             }
             EventV1::ChannelUpdate {
                 id, data, clear, ..
@@ -474,7 +560,7 @@ impl State {
                 };
 
                 if let Some(channel) = self.cache.channels.get_mut(id) {
-                    for field in clear {
+                    for field in clear.iter() {
                         channel.remove_field(&field.clone().into());
                     }
 
@@ -488,7 +574,21 @@ impl State {
                 }
 
                 if let Some(channel) = self.cache.channels.get(id) {
+                    // Changing the permissions of a channel affects its threads
+                    if !channel.is_thread()
+                        && (data.role_permissions.is_some()
+                            || data.default_permissions.is_some()
+                            || clear.contains(&v0::FieldsChannel::DefaultPermissions))
+                    {
+                        queue_server = channel.server().map(|s| s.to_string());
+                    }
+
                     let can_view = self.cache.can_view_channel(db, channel).await;
+                    if !could_view && !can_view {
+                        self.cache.channels.remove(id);
+                        return false;
+                    }
+
                     if could_view != can_view {
                         if can_view {
                             queue_add = Some(id.clone());
@@ -503,6 +603,16 @@ impl State {
             EventV1::ChannelDelete { id } => {
                 self.remove_subscription(id).await;
                 self.cache.channels.remove(id);
+                self.cache.thread_members.remove(id);
+            }
+            EventV1::ThreadMemberUpdate { id, member } => {
+                if member.is_some() {
+                    self.cache.thread_members.insert(id.clone());
+                } else {
+                    self.cache.thread_members.remove(id);
+                }
+
+                queue_thread = Some(id.clone());
             }
             EventV1::ChannelGroupJoin { user, .. } => {
                 self.insert_subscription(user.clone()).await;
@@ -569,24 +679,16 @@ impl State {
                     self.remove_subscription(id).await;
                     self.remove_active_server(id).await;
 
-                    if let Some(server) = self.cache.servers.remove(id) {
-                        for channel in &server.channels {
-                            self.remove_subscription(channel).await;
-                            self.cache.channels.remove(channel);
-                        }
-                    }
+                    self.cache.servers.remove(id);
+                    self.remove_server_channels(id).await;
                     self.cache.members.remove(id);
                 }
             }
             EventV1::ServerDelete { id } => {
                 self.remove_subscription(id).await;
 
-                if let Some(server) = self.cache.servers.remove(id) {
-                    for channel in &server.channels {
-                        self.remove_subscription(channel).await;
-                        self.cache.channels.remove(channel);
-                    }
-                }
+                self.cache.servers.remove(id);
+                self.remove_server_channels(id).await;
                 self.cache.members.remove(id);
             }
             EventV1::ServerMemberUpdate { id, data, clear } => {
@@ -677,6 +779,36 @@ impl State {
             }
 
             _ => {}
+        }
+
+        // Membership decides whether we can see private threads.
+        if let Some(id) = queue_thread {
+            let cached = self.cache.channels.get(&id).cloned();
+            let could_view = cached.is_some();
+            let channel = match cached {
+                Some(channel) => Some(channel),
+                None => db.fetch_channel(&id).await.ok(),
+            };
+
+            if let Some(channel) = channel {
+                let can_view = self.cache.can_view_channel(db, &channel).await;
+                if could_view != can_view {
+                    let update = event.clone();
+                    if can_view {
+                        self.cache.channels.insert(id.clone(), channel.clone());
+                        *event = EventV1::Bulk {
+                            v: vec![EventV1::ChannelCreate(channel.into()), update],
+                        };
+                        queue_add = Some(id);
+                    } else {
+                        self.cache.channels.remove(&id);
+                        *event = EventV1::Bulk {
+                            v: vec![update, EventV1::ChannelDelete { id: id.clone() }],
+                        };
+                        queue_remove = Some(id);
+                    }
+                }
+            }
         }
 
         // Calculate server permissions if requested.

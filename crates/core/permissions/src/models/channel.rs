@@ -7,7 +7,19 @@ pub enum ChannelType {
     DirectMessage,
     Group,
     ServerChannel,
+    Thread,
     Unknown,
+}
+
+/// State of a thread relevant to permission calculation
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ThreadState {
+    /// Only members (and ManageThreads) can see the thread
+    pub private: bool,
+    /// Only ManageThreads can post, react or unarchive
+    pub locked: bool,
+    /// Whether our perspective user has joined the thread (or owns it)
+    pub member: bool,
 }
 
 /// Permission value on Revolt
@@ -103,8 +115,18 @@ pub enum ChannelPermission {
     /// Access server audit logs
     ViewAuditLogs = 1 << 40,
 
+    // * Thread permissions
+    /// Create public threads and forum posts
+    CreatePublicThreads = 1 << 48,
+    /// Create private threads
+    CreatePrivateThreads = 1 << 49,
+    /// Send messages in threads and forum posts
+    SendMessagesInThreads = 1 << 50,
+    /// Rename, archive, lock, pin and delete threads, and see all private threads
+    ManageThreads = 1 << 51,
+
     // * Misc. permissions
-    // % Bits 41 to 52: free area
+    // % Bits 41 to 47: free area
     // % Bits 53 to 64: do not use
 
     // * Grant all permissions
@@ -140,6 +162,9 @@ pub static DEFAULT_PERMISSION: Lazy<u64> = Lazy::new(|| {
             + ChannelPermission::Speak
             + ChannelPermission::Listen
             + ChannelPermission::Video
+            + ChannelPermission::CreatePublicThreads
+            + ChannelPermission::CreatePrivateThreads
+            + ChannelPermission::SendMessagesInThreads
     )
 });
 

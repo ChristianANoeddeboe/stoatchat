@@ -3,7 +3,7 @@ use iso8601_timestamp::Timestamp;
 use revolt_config::{config, FeaturesLimits};
 use revolt_models::v0::{
     self, BulkMessageResponse, DataMessageSend, Embed, MessageAuthor, MessageFlags, MessageSort,
-    MessageWebhook, PushNotification, ReplyIntent, SendableEmbed, Text,
+    MessageWebhook, PushNotification, ReplyIntent, SendableEmbed, Text, ThreadNotify,
 };
 use revolt_permissions::{calculate_channel_permissions, ChannelPermission, PermissionValue};
 use revolt_result::{ErrorType, Result};
@@ -119,6 +119,8 @@ auto_derived!(
             by: String,
             finished_at: Option<Timestamp>,
         },
+        #[serde(rename = "thread_created")]
+        ThreadCreated { name: String, by: String },
     }
 
     /// Name and / or avatar override information
@@ -275,9 +277,44 @@ impl Message {
         user: Option<v0::User>,
         member: Option<v0::Member>,
         limits: FeaturesLimits,
+        idempotency: IdempotencyKey,
+        generate_embeds: bool,
+        allow_mentions: bool,
+    ) -> Result<Message> {
+        Message::create_from_api_with_id(
+            db,
+            amqp,
+            channel,
+            data,
+            author,
+            user,
+            member,
+            limits,
+            idempotency,
+            generate_embeds,
+            allow_mentions,
+            None,
+        )
+        .await
+    }
+
+    /// Create message from API data, optionally using a pre-determined id
+    ///
+    /// The first message of a forum post shares its id with the post.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_from_api_with_id(
+        db: &Database,
+        amqp: Option<&AMQP>,
+        channel: Channel,
+        data: DataMessageSend,
+        author: MessageAuthor<'_>,
+        user: Option<v0::User>,
+        member: Option<v0::Member>,
+        limits: FeaturesLimits,
         mut idempotency: IdempotencyKey,
         generate_embeds: bool,
         allow_mentions: bool,
+        message_id: Option<String>,
     ) -> Result<Message> {
         let config = config().await;
 
@@ -330,10 +367,7 @@ impl Message {
             }
         }
 
-        let server_id = match channel {
-            Channel::TextChannel { ref server, .. } => Some(server.clone()),
-            _ => None,
-        };
+        let server_id = channel.server().map(|server| server.to_string());
 
         // Ensure restrict_reactions is not specified without reactions list
         if let Some(interactions) = &data.interactions {
@@ -357,7 +391,7 @@ impl Message {
         };
 
         // Start constructing the message
-        let message_id = Ulid::new().to_string();
+        let message_id = message_id.unwrap_or_else(|| Ulid::new().to_string());
         let mut message = Message {
             id: message_id.clone(),
             channel: channel.id().to_string(),
@@ -498,7 +532,9 @@ impl Message {
                     user_mentions.retain(|m| recipients_hash.contains(m));
                     role_mentions.clear();
                 }
-                Channel::TextChannel { ref server, .. } => {
+                Channel::TextChannel { ref server, .. }
+                | Channel::ForumChannel { ref server, .. }
+                | Channel::Thread { ref server, .. } => {
                     let mentions_vec = Vec::from_iter(user_mentions.iter().cloned());
 
                     let valid_members = db.fetch_members(server.as_str(), &mentions_vec[..]).await;
@@ -688,13 +724,51 @@ impl Message {
         )
         .await?;
 
+        if let Channel::Thread { id, .. } = channel {
+            db.add_to_thread_counts(id, 1, 0).await?;
+        }
+
         let is_dm_or_group = matches!(
             channel,
             Channel::DirectMessage { .. } | Channel::Group { .. }
         );
 
+        // Thread members are notified according to their notification setting
+        let thread_recipients = if let Channel::Thread { id, .. } = channel {
+            let mut mentions: HashSet<String> = self
+                .mentions
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
+            let mut recipients = vec![];
+            for member in db.fetch_thread_members(id).await? {
+                let user = member.id.user;
+                let mentioned = mentions.remove(&user);
+                let notify = match member.notify {
+                    ThreadNotify::All | ThreadNotify::Default => true,
+                    ThreadNotify::Mentions => mentioned,
+                    ThreadNotify::None => false,
+                };
+
+                if notify && user != author.id() {
+                    recipients.push(user);
+                }
+            }
+
+            // Mentioned users outside of the thread still get notified
+            recipients.extend(mentions);
+            Some(recipients)
+        } else {
+            None
+        };
+
         if !self.has_suppressed_notifications()
-            && (is_dm_or_group || self.mentions.is_some() || self.contains_mass_push_mention())
+            && (is_dm_or_group
+                || thread_recipients.as_ref().is_some_and(|r| !r.is_empty())
+                || self.mentions.is_some()
+                || self.contains_mass_push_mention())
         {
             // send Push notifications
             #[cfg(feature = "tasks")]
@@ -721,6 +795,7 @@ impl Message {
                             Channel::TextChannel { .. } => {
                                 self.mentions.clone().unwrap_or_default()
                             }
+                            Channel::Thread { .. } => thread_recipients.unwrap_or_default(),
                             _ => vec![],
                         },
                         false, // branch already dictates this
@@ -856,6 +931,7 @@ impl Message {
                                 users.push(by.clone());
                             }
                             v0::SystemMessage::CallStarted { by, .. } => users.push(by.clone()),
+                            v0::SystemMessage::ThreadCreated { by, .. } => users.push(by.clone()),
                         }
                     }
                     users

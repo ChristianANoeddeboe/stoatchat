@@ -191,6 +191,7 @@ impl From<crate::Channel> for Channel {
                 nsfw,
                 voice,
                 slowmode,
+                default_auto_archive_minutes,
             } => Channel::TextChannel {
                 id,
                 server,
@@ -203,6 +204,81 @@ impl From<crate::Channel> for Channel {
                 nsfw,
                 voice: voice.map(|voice| voice.into()),
                 slowmode,
+                default_auto_archive_minutes,
+            },
+            crate::Channel::ForumChannel {
+                id,
+                server,
+                name,
+                description,
+                icon,
+                last_message_id,
+                default_permissions,
+                role_permissions,
+                nsfw,
+                slowmode,
+                available_tags,
+                require_tag,
+                default_reaction_emoji,
+                default_sort_order,
+                default_layout,
+                default_thread_slowmode,
+                default_auto_archive_minutes,
+            } => Channel::ForumChannel {
+                id,
+                server,
+                name,
+                description,
+                icon: icon.map(|file| file.into()),
+                last_message_id,
+                default_permissions,
+                role_permissions,
+                nsfw,
+                slowmode,
+                available_tags,
+                require_tag,
+                default_reaction_emoji,
+                default_sort_order,
+                default_layout,
+                default_thread_slowmode,
+                default_auto_archive_minutes,
+            },
+            crate::Channel::Thread {
+                id,
+                server,
+                parent,
+                owner,
+                name,
+                private,
+                invitable,
+                applied_tags,
+                pinned,
+                archived,
+                locked,
+                auto_archive_minutes,
+                archived_at,
+                slowmode,
+                last_message_id,
+                message_count,
+                member_count,
+            } => Channel::Thread {
+                id,
+                server,
+                parent,
+                owner,
+                name,
+                private,
+                invitable,
+                applied_tags,
+                pinned,
+                archived,
+                locked,
+                auto_archive_minutes,
+                archived_at,
+                slowmode,
+                last_message_id,
+                message_count,
+                member_count,
             },
         }
     }
@@ -257,6 +333,7 @@ impl From<Channel> for crate::Channel {
                 nsfw,
                 voice,
                 slowmode,
+                default_auto_archive_minutes,
             } => crate::Channel::TextChannel {
                 id,
                 server,
@@ -269,6 +346,81 @@ impl From<Channel> for crate::Channel {
                 nsfw,
                 voice: voice.map(|voice| voice.into()),
                 slowmode,
+                default_auto_archive_minutes,
+            },
+            Channel::ForumChannel {
+                id,
+                server,
+                name,
+                description,
+                icon,
+                last_message_id,
+                default_permissions,
+                role_permissions,
+                nsfw,
+                slowmode,
+                available_tags,
+                require_tag,
+                default_reaction_emoji,
+                default_sort_order,
+                default_layout,
+                default_thread_slowmode,
+                default_auto_archive_minutes,
+            } => crate::Channel::ForumChannel {
+                id,
+                server,
+                name,
+                description,
+                icon: icon.map(|file| file.into()),
+                last_message_id,
+                default_permissions,
+                role_permissions,
+                nsfw,
+                slowmode,
+                available_tags,
+                require_tag,
+                default_reaction_emoji,
+                default_sort_order,
+                default_layout,
+                default_thread_slowmode,
+                default_auto_archive_minutes,
+            },
+            Channel::Thread {
+                id,
+                server,
+                parent,
+                owner,
+                name,
+                private,
+                invitable,
+                applied_tags,
+                pinned,
+                archived,
+                locked,
+                auto_archive_minutes,
+                archived_at,
+                slowmode,
+                last_message_id,
+                message_count,
+                member_count,
+            } => crate::Channel::Thread {
+                id,
+                server,
+                parent,
+                owner,
+                name,
+                private,
+                invitable,
+                applied_tags,
+                pinned,
+                archived,
+                locked,
+                auto_archive_minutes,
+                archived_at,
+                slowmode,
+                last_message_id,
+                message_count,
+                member_count,
             },
         }
     }
@@ -289,6 +441,22 @@ impl From<crate::PartialChannel> for PartialChannel {
             last_message_id: value.last_message_id,
             voice: value.voice.map(|voice| voice.into()),
             slowmode: value.slowmode,
+            available_tags: value.available_tags,
+            require_tag: value.require_tag,
+            default_reaction_emoji: value.default_reaction_emoji,
+            default_sort_order: value.default_sort_order,
+            default_layout: value.default_layout,
+            default_thread_slowmode: value.default_thread_slowmode,
+            default_auto_archive_minutes: value.default_auto_archive_minutes,
+            invitable: value.invitable,
+            applied_tags: value.applied_tags,
+            pinned: value.pinned,
+            archived: value.archived,
+            locked: value.locked,
+            auto_archive_minutes: value.auto_archive_minutes,
+            archived_at: value.archived_at,
+            message_count: value.message_count,
+            member_count: value.member_count,
         }
     }
 }
@@ -308,6 +476,22 @@ impl From<PartialChannel> for crate::PartialChannel {
             last_message_id: value.last_message_id,
             voice: value.voice.map(|voice| voice.into()),
             slowmode: value.slowmode,
+            available_tags: value.available_tags,
+            require_tag: value.require_tag,
+            default_reaction_emoji: value.default_reaction_emoji,
+            default_sort_order: value.default_sort_order,
+            default_layout: value.default_layout,
+            default_thread_slowmode: value.default_thread_slowmode,
+            default_auto_archive_minutes: value.default_auto_archive_minutes,
+            invitable: value.invitable,
+            applied_tags: value.applied_tags,
+            pinned: value.pinned,
+            archived: value.archived,
+            locked: value.locked,
+            auto_archive_minutes: value.auto_archive_minutes,
+            archived_at: value.archived_at,
+            message_count: value.message_count,
+            member_count: value.member_count,
         }
     }
 }
@@ -320,6 +504,11 @@ impl From<FieldsChannel> for crate::FieldsChannel {
             FieldsChannel::DefaultPermissions => crate::FieldsChannel::DefaultPermissions,
             FieldsChannel::Voice => crate::FieldsChannel::Voice,
             FieldsChannel::Slowmode => crate::FieldsChannel::Slowmode,
+            FieldsChannel::DefaultReactionEmoji => crate::FieldsChannel::DefaultReactionEmoji,
+            FieldsChannel::DefaultThreadSlowmode => crate::FieldsChannel::DefaultThreadSlowmode,
+            FieldsChannel::DefaultAutoArchiveMinutes => {
+                crate::FieldsChannel::DefaultAutoArchiveMinutes
+            }
         }
     }
 }
@@ -332,6 +521,11 @@ impl From<crate::FieldsChannel> for FieldsChannel {
             crate::FieldsChannel::DefaultPermissions => FieldsChannel::DefaultPermissions,
             crate::FieldsChannel::Voice => FieldsChannel::Voice,
             crate::FieldsChannel::Slowmode => FieldsChannel::Slowmode,
+            crate::FieldsChannel::DefaultReactionEmoji => FieldsChannel::DefaultReactionEmoji,
+            crate::FieldsChannel::DefaultThreadSlowmode => FieldsChannel::DefaultThreadSlowmode,
+            crate::FieldsChannel::DefaultAutoArchiveMinutes => {
+                FieldsChannel::DefaultAutoArchiveMinutes
+            }
         }
     }
 }
@@ -540,6 +734,7 @@ impl From<crate::SystemMessage> for SystemMessage {
             crate::SystemMessage::CallStarted { by, finished_at } => {
                 Self::CallStarted { by, finished_at }
             }
+            crate::SystemMessage::ThreadCreated { name, by } => Self::ThreadCreated { name, by },
         }
     }
 }
@@ -1680,5 +1875,24 @@ impl From<WebPushSubscription> for crate::WebPushSubscription {
 impl From<crate::PartialEmoji> for PartialEmoji {
     fn from(value: crate::PartialEmoji) -> Self {
         PartialEmoji { name: value.name }
+    }
+}
+
+impl From<crate::ThreadMember> for ThreadMember {
+    fn from(value: crate::ThreadMember) -> Self {
+        ThreadMember {
+            id: value.id.into(),
+            joined_at: value.joined_at,
+            notify: value.notify,
+        }
+    }
+}
+
+impl From<crate::ThreadMemberCompositeKey> for ThreadMemberCompositeKey {
+    fn from(value: crate::ThreadMemberCompositeKey) -> Self {
+        ThreadMemberCompositeKey {
+            thread: value.thread,
+            user: value.user,
+        }
     }
 }

@@ -4,7 +4,7 @@ use crate::{Database, Message, AMQP};
 use deadqueue::limited::Queue;
 use once_cell::sync::Lazy;
 use revolt_config::capture_message;
-use revolt_models::v0::PushNotification;
+use revolt_models::v0::{self, PushNotification};
 use std::{
     collections::{HashMap, HashSet},
     time::Duration,
@@ -14,7 +14,6 @@ use validator::HasLen;
 use revolt_result::Result;
 
 use super::DelayedTask;
-use crate::Channel::TextChannel;
 
 /// Enumeration of possible events
 #[derive(Debug, Eq, PartialEq)]
@@ -135,8 +134,20 @@ pub async fn handle_ack_event(
             for user in users {
                 let message_ids: Vec<String> = messages
                     .iter()
-                    .filter_map(|(_, message, recipients, _)| {
-                        if recipients.contains(user) {
+                    .filter_map(|(push, message, recipients, _)| {
+                        // Thread members are pushed every message, but only
+                        // actual mentions count towards their unread mentions
+                        let in_thread = push
+                            .as_ref()
+                            .is_some_and(|push| matches!(push.channel, v0::Channel::Thread { .. }));
+
+                        let mentioned = !in_thread
+                            || message
+                                .mentions
+                                .as_ref()
+                                .is_some_and(|mentions| mentions.contains(user));
+
+                        if recipients.contains(user) && mentioned {
                             Some(message.id.clone())
                         } else {
                             None
@@ -195,8 +206,11 @@ pub async fn handle_ack_event(
                     .await
                     .expect("Failed to fetch channel from db");
 
-                if let TextChannel { server, .. } = channel {
-                    if let Err(err) = amqp.mass_mention_message_sent(server, mass_mentions).await {
+                if let Some(server) = channel.server() {
+                    if let Err(err) = amqp
+                        .mass_mention_message_sent(server.to_string(), mass_mentions)
+                        .await
+                    {
                         revolt_config::capture_error(&err);
                     }
                 } else {

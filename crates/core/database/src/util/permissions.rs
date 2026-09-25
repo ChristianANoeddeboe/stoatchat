@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use revolt_permissions::{
     calculate_user_permissions, ChannelType, Override, PermissionQuery, PermissionValue,
-    RelationshipStatus, DEFAULT_PERMISSION_DIRECT_MESSAGE,
+    RelationshipStatus, ThreadState, DEFAULT_PERMISSION_DIRECT_MESSAGE,
 };
 
 use crate::{Channel, Database, Member, Server, User};
@@ -16,6 +16,8 @@ pub struct DatabasePermissionQuery<'a> {
     perspective: &'a User,
     user: Option<Cow<'a, User>>,
     channel: Option<Cow<'a, Channel>>,
+    parent: Option<Cow<'a, Channel>>,
+    thread_member: Option<bool>,
     server: Option<Cow<'a, Server>>,
     member: Option<Cow<'a, Member>>,
 
@@ -206,112 +208,140 @@ impl PermissionQuery for DatabasePermissionQuery<'_> {
     /// Get the type of the channel
     #[allow(deprecated)]
     async fn get_channel_type(&mut self) -> ChannelType {
-        if let Some(channel) = &self.channel {
-            match channel {
-                Cow::Borrowed(Channel::DirectMessage { .. })
-                | Cow::Owned(Channel::DirectMessage { .. }) => ChannelType::DirectMessage,
-                Cow::Borrowed(Channel::Group { .. }) | Cow::Owned(Channel::Group { .. }) => {
-                    ChannelType::Group
-                }
-                Cow::Borrowed(Channel::SavedMessages { .. })
-                | Cow::Owned(Channel::SavedMessages { .. }) => ChannelType::SavedMessages,
-                Cow::Borrowed(Channel::TextChannel { .. })
-                | Cow::Owned(Channel::TextChannel { .. }) => ChannelType::ServerChannel,
+        match self.channel.as_deref() {
+            Some(Channel::DirectMessage { .. }) => ChannelType::DirectMessage,
+            Some(Channel::Group { .. }) => ChannelType::Group,
+            Some(Channel::SavedMessages { .. }) => ChannelType::SavedMessages,
+            Some(Channel::TextChannel { .. } | Channel::ForumChannel { .. }) => {
+                ChannelType::ServerChannel
             }
+            Some(Channel::Thread { .. }) => ChannelType::Thread,
+            None => ChannelType::Unknown,
+        }
+    }
+
+    /// Get the state of the thread, if the channel is a thread
+    async fn get_thread_state(&mut self) -> ThreadState {
+        let Some(Channel::Thread {
+            id,
+            owner,
+            private,
+            locked,
+            ..
+        }) = self.channel.as_deref()
+        else {
+            unimplemented!()
+        };
+
+        let (private, locked) = (*private, *locked);
+        let member = if owner == &self.perspective.id {
+            true
+        } else if let Some(member) = self.thread_member {
+            member
+        } else if private {
+            let id = id.clone();
+            let member = self
+                .database
+                .fetch_thread_member(&id, &self.perspective.id)
+                .await
+                .is_ok();
+
+            self.thread_member = Some(member);
+            member
         } else {
-            ChannelType::Unknown
+            // membership only matters for private threads
+            false
+        };
+
+        ThreadState {
+            private,
+            locked,
+            member,
         }
     }
 
     /// Get the default channel permissions
     /// Group channel defaults should be mapped to an allow-only override
     async fn get_default_channel_permissions(&mut self) -> Override {
-        if let Some(channel) = &self.channel {
-            match channel {
-                Cow::Borrowed(Channel::Group { permissions, .. })
-                | Cow::Owned(Channel::Group { permissions, .. }) => Override {
-                    allow: permissions.unwrap_or(*DEFAULT_PERMISSION_DIRECT_MESSAGE as i64) as u64,
-                    deny: 0,
+        match self.permission_channel().await {
+            Some(Channel::Group { permissions, .. }) => Override {
+                allow: permissions.unwrap_or(*DEFAULT_PERMISSION_DIRECT_MESSAGE as i64) as u64,
+                deny: 0,
+            },
+            Some(
+                Channel::TextChannel {
+                    default_permissions,
+                    ..
+                }
+                | Channel::ForumChannel {
+                    default_permissions,
+                    ..
                 },
-                Cow::Borrowed(Channel::TextChannel {
-                    default_permissions,
-                    ..
-                })
-                | Cow::Owned(Channel::TextChannel {
-                    default_permissions,
-                    ..
-                }) => default_permissions.unwrap_or_default().into(),
-                _ => Default::default(),
-            }
-        } else {
-            Default::default()
+            ) => default_permissions.unwrap_or_default().into(),
+            _ => Default::default(),
         }
     }
 
     /// Get the ordered role overrides (from lowest to highest) for this member in this channel
     async fn get_our_channel_role_overrides(&mut self) -> Vec<Override> {
-        if let Some(channel) = &self.channel {
-            match channel {
-                Cow::Borrowed(Channel::TextChannel {
-                    role_permissions, ..
-                })
-                | Cow::Owned(Channel::TextChannel {
-                    role_permissions, ..
-                }) => {
-                    if let Some(server) = &self.server {
-                        let member_roles = self
-                            .member
-                            .as_ref()
-                            .map(|member| member.roles.clone())
-                            .unwrap_or_default();
+        self.permission_channel().await;
 
-                        let mut roles = role_permissions
-                            .iter()
-                            .filter(|(id, _)| member_roles.contains(id))
-                            .filter_map(|(id, permission)| {
-                                server.roles.get(id).map(|role| {
-                                    let v: Override = (*permission).into();
-                                    (role.rank, v)
-                                })
-                            })
-                            .collect::<Vec<(i64, Override)>>();
-
-                        roles.sort_by(|a, b| b.0.cmp(&a.0));
-                        roles.into_iter().map(|(_, v)| v).collect()
-                    } else {
-                        vec![]
-                    }
-                }
-                _ => vec![],
-            }
+        let channel = if let Some(Channel::Thread { .. }) = self.channel.as_deref() {
+            self.parent.as_deref()
         } else {
-            vec![]
+            self.channel.as_deref()
+        };
+
+        match channel {
+            Some(
+                Channel::TextChannel {
+                    role_permissions, ..
+                }
+                | Channel::ForumChannel {
+                    role_permissions, ..
+                },
+            ) => {
+                if let Some(server) = &self.server {
+                    let member_roles = self
+                        .member
+                        .as_ref()
+                        .map(|member| member.roles.clone())
+                        .unwrap_or_default();
+
+                    let mut roles = role_permissions
+                        .iter()
+                        .filter(|(id, _)| member_roles.contains(id))
+                        .filter_map(|(id, permission)| {
+                            server.roles.get(id).map(|role| {
+                                let v: Override = (*permission).into();
+                                (role.rank, v)
+                            })
+                        })
+                        .collect::<Vec<(i64, Override)>>();
+
+                    roles.sort_by(|a, b| b.0.cmp(&a.0));
+                    roles.into_iter().map(|(_, v)| v).collect()
+                } else {
+                    vec![]
+                }
+            }
+            _ => vec![],
         }
     }
 
     /// Do we own this group or saved messages channel if it is one of those?
     async fn do_we_own_the_channel(&mut self) -> bool {
-        if let Some(channel) = &self.channel {
-            match channel {
-                Cow::Borrowed(Channel::Group { owner, .. })
-                | Cow::Owned(Channel::Group { owner, .. }) => owner == &self.perspective.id,
-                Cow::Borrowed(Channel::SavedMessages { user, .. })
-                | Cow::Owned(Channel::SavedMessages { user, .. }) => user == &self.perspective.id,
-                _ => false,
-            }
-        } else {
-            false
+        match self.channel.as_deref() {
+            Some(Channel::Group { owner, .. }) => owner == &self.perspective.id,
+            Some(Channel::SavedMessages { user, .. }) => user == &self.perspective.id,
+            _ => false,
         }
     }
 
     /// Are we a recipient of this channel?
     async fn are_we_part_of_the_channel(&mut self) -> bool {
-        if let Some(
-            Cow::Borrowed(Channel::DirectMessage { recipients, .. })
-            | Cow::Owned(Channel::DirectMessage { recipients, .. })
-            | Cow::Borrowed(Channel::Group { recipients, .. })
-            | Cow::Owned(Channel::Group { recipients, .. }),
-        ) = &self.channel
+        if let Some(Channel::DirectMessage { recipients, .. } | Channel::Group { recipients, .. }) =
+            self.channel.as_deref()
         {
             recipients.contains(&self.perspective.id)
         } else {
@@ -322,55 +352,72 @@ impl PermissionQuery for DatabasePermissionQuery<'_> {
     /// Set the current user as the recipient of this channel
     /// (this will only ever be called for DirectMessage channels, use unimplemented!() for other code paths)
     async fn set_recipient_as_user(&mut self) {
-        if let Some(channel) = &self.channel {
-            match channel {
-                Cow::Borrowed(Channel::DirectMessage { recipients, .. })
-                | Cow::Owned(Channel::DirectMessage { recipients, .. }) => {
-                    let recipient_id = recipients
-                        .iter()
-                        .find(|recipient| recipient != &&self.perspective.id)
-                        .expect("Missing recipient for DM");
+        match self.channel.as_deref() {
+            Some(Channel::DirectMessage { recipients, .. }) => {
+                let recipient_id = recipients
+                    .iter()
+                    .find(|recipient| recipient != &&self.perspective.id)
+                    .expect("Missing recipient for DM")
+                    .clone();
 
-                    if let Ok(user) = self.database.fetch_user(recipient_id).await {
-                        self.user.replace(Cow::Owned(user));
-                    }
+                if let Ok(user) = self.database.fetch_user(&recipient_id).await {
+                    self.user.replace(Cow::Owned(user));
                 }
-                _ => unimplemented!(),
             }
+            Some(_) => unimplemented!(),
+            None => {}
         }
     }
 
     /// Set the current server as the server owning this channel
     /// (this will only ever be called for server channels, use unimplemented!() for other code paths)
     async fn set_server_from_channel(&mut self) {
-        if let Some(channel) = &self.channel {
-            #[allow(deprecated)]
-            match channel {
-                Cow::Borrowed(Channel::TextChannel { server, .. })
-                | Cow::Owned(Channel::TextChannel { server, .. }) => {
-                    if let Some(known_server) =
-                        // I'm not sure why I can't just pattern match both at once here?
-                        // It throws some weird error and the provided fix doesn't work :/
-                        if let Some(Cow::Borrowed(known_server)) = self.server {
-                                Some(known_server)
-                            } else if let Some(Cow::Owned(ref known_server)) = self.server {
-                                Some(known_server)
-                            } else {
-                                None
-                            }
-                    {
-                        if server == &known_server.id {
-                            // Already cached, return early.
-                            return;
-                        }
-                    }
+        let Some(channel) = self.channel.as_deref() else {
+            return;
+        };
 
-                    if let Ok(server) = self.database.fetch_server(server).await {
-                        self.server.replace(Cow::Owned(server));
-                    }
-                }
-                _ => unimplemented!(),
+        let Some(server) = channel.server() else {
+            unimplemented!()
+        };
+
+        if self
+            .server
+            .as_deref()
+            .is_some_and(|known_server| known_server.id == server)
+        {
+            // Already cached, return early.
+            return;
+        }
+
+        let server = server.to_string();
+        if let Ok(server) = self.database.fetch_server(&server).await {
+            self.server.replace(Cow::Owned(server));
+        }
+    }
+}
+
+impl DatabasePermissionQuery<'_> {
+    /// Channel whose permission overrides apply,
+    /// which is the parent channel for threads (fetched if not known)
+    async fn permission_channel(&mut self) -> Option<&Channel> {
+        if let Some(Channel::Thread { parent, .. }) = self.channel.as_deref() {
+            if self
+                .parent
+                .as_deref()
+                .is_none_or(|known| known.id() != parent)
+            {
+                let parent = parent.clone();
+                self.parent = self
+                    .database
+                    .fetch_channel(&parent)
+                    .await
+                    .ok()
+                    .map(Cow::Owned);
             }
+
+            self.parent.as_deref()
+        } else {
+            self.channel.as_deref()
         }
     }
 }
@@ -383,6 +430,8 @@ impl<'a> DatabasePermissionQuery<'a> {
             perspective,
             user: None,
             channel: None,
+            parent: None,
+            thread_member: None,
             server: None,
             member: None,
 
@@ -429,6 +478,22 @@ impl<'a> DatabasePermissionQuery<'a> {
     pub fn channel(self, channel: &'a Channel) -> DatabasePermissionQuery<'a> {
         DatabasePermissionQuery {
             channel: Some(Cow::Borrowed(channel)),
+            ..self
+        }
+    }
+
+    /// Use parent channel (for threads)
+    pub fn parent(self, parent: &'a Channel) -> DatabasePermissionQuery<'a> {
+        DatabasePermissionQuery {
+            parent: Some(Cow::Borrowed(parent)),
+            ..self
+        }
+    }
+
+    /// Use known thread membership (for threads)
+    pub fn thread_member(self, thread_member: bool) -> DatabasePermissionQuery<'a> {
+        DatabasePermissionQuery {
+            thread_member: Some(thread_member),
             ..self
         }
     }

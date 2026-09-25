@@ -1,8 +1,13 @@
 use super::AbstractChannels;
-use crate::{AbstractServers, Channel, FieldsChannel, IntoDocumentPath, MongoDb, PartialChannel, util::ChunkedDatabaseGenerator};
+use crate::{
+    util::ChunkedDatabaseGenerator, AbstractServers, AbstractThreadMembers, Channel, FieldsChannel,
+    IntoDocumentPath, MongoDb, PartialChannel,
+};
 use bson::{Bson, Document};
 use futures::StreamExt;
-use mongodb::options::ReadConcern;
+use iso8601_timestamp::Timestamp;
+use mongodb::options::{FindOptions, ReadConcern, ReturnDocument};
+use revolt_models::v0::ForumSortOrder;
 use revolt_permissions::OverrideField;
 use revolt_result::Result;
 
@@ -71,7 +76,10 @@ impl AbstractChannels for MongoDb {
     }
 
     // Fetch all group dms for a user
-    async fn find_group_message_channels(&self, user_id: &str) -> Result<ChunkedDatabaseGenerator<Channel>> {
+    async fn find_group_message_channels(
+        &self,
+        user_id: &str,
+    ) -> Result<ChunkedDatabaseGenerator<Channel>> {
         let mut session = self
             .start_session()
             .await
@@ -83,7 +91,8 @@ impl AbstractChannels for MongoDb {
             .await
             .map_err(|_| create_database_error!("start_transaction", COL))?;
 
-        let cursor = self.col(COL)
+        let cursor = self
+            .col(COL)
             .find(doc! {
                 "channel_type": "Group",
                 "recipients": user_id
@@ -229,9 +238,16 @@ impl AbstractChannels for MongoDb {
     async fn delete_channel(&self, channel: &Channel) -> Result<()> {
         let id = channel.id().to_string();
         let server_id = match channel {
-            Channel::TextChannel { server, .. } => Some(server),
+            Channel::TextChannel { server, .. } | Channel::ForumChannel { server, .. } => {
+                Some(server)
+            }
             _ => None,
         };
+
+        // Delete thread members.
+        if let Channel::Thread { .. } = channel {
+            self.delete_thread_members(&[id.clone()]).await?;
+        }
 
         // Delete invites and unreads.
         self.delete_associated_channel_objects(Bson::String(id.to_string()))
@@ -304,9 +320,163 @@ impl AbstractChannels for MongoDb {
         // Delete the channel itself
         query!(self, delete_one_by_id, COL, channel.id()).map(|_| ())
     }
+
+    /// Fetch all unarchived threads in the given servers
+    async fn fetch_active_threads(&self, server_ids: &[String]) -> Result<Vec<Channel>> {
+        self.find_channels(
+            doc! {
+                "channel_type": "Thread",
+                "server": { "$in": server_ids },
+                "archived": false,
+            },
+            None,
+        )
+        .await
+    }
+
+    /// Fetch all unarchived threads
+    async fn fetch_all_active_threads(&self) -> Result<Vec<Channel>> {
+        self.find_channels(
+            doc! {
+                "channel_type": "Thread",
+                "archived": false,
+            },
+            None,
+        )
+        .await
+    }
+
+    /// Fetch all threads of a channel, optionally filtered by archived state
+    async fn fetch_threads(&self, parent_id: &str, archived: Option<bool>) -> Result<Vec<Channel>> {
+        let mut filter = doc! {
+            "channel_type": "Thread",
+            "parent": parent_id,
+        };
+
+        if let Some(archived) = archived {
+            filter.insert("archived", archived);
+        }
+
+        self.find_channels(filter, None).await
+    }
+
+    /// Fetch archived threads of a channel, most recently archived first
+    async fn fetch_archived_threads(
+        &self,
+        parent_id: &str,
+        private: bool,
+        before: Option<Timestamp>,
+        limit: i64,
+    ) -> Result<Vec<Channel>> {
+        let mut filter = doc! {
+            "channel_type": "Thread",
+            "parent": parent_id,
+            "archived": true,
+            "private": if private { doc! { "$eq": true } } else { doc! { "$ne": true } },
+        };
+
+        if let Some(before) = before {
+            filter.insert(
+                "archived_at",
+                doc! { "$lt": bson::to_bson(&before).map_err(|_| create_database_error!("to_bson", COL))? },
+            );
+        }
+
+        self.find_channels(
+            filter,
+            Some(
+                FindOptions::builder()
+                    .sort(doc! { "archived_at": -1 })
+                    .limit(limit)
+                    .build(),
+            ),
+        )
+        .await
+    }
+
+    /// Search the posts of a forum, pinned posts first
+    async fn search_threads(
+        &self,
+        parent_id: &str,
+        tags: &[String],
+        sort: &ForumSortOrder,
+        archived: bool,
+        before: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<Channel>> {
+        let key = match sort {
+            ForumSortOrder::LatestActivity => "last_message_id",
+            ForumSortOrder::CreationDate => "_id",
+        };
+
+        let mut filter = doc! {
+            "channel_type": "Thread",
+            "parent": parent_id,
+            "archived": archived,
+        };
+
+        if !tags.is_empty() {
+            filter.insert("applied_tags", doc! { "$all": tags });
+        }
+
+        if let Some(before) = before {
+            filter.insert(key, doc! { "$lt": before });
+            filter.insert("pinned", doc! { "$ne": true });
+        }
+
+        self.find_channels(
+            filter,
+            Some(
+                FindOptions::builder()
+                    .sort(doc! { "pinned": -1, key: -1 })
+                    .limit(limit)
+                    .build(),
+            ),
+        )
+        .await
+    }
+
+    /// Atomically add to the message and member counts of a thread, returns the updated thread
+    async fn add_to_thread_counts(
+        &self,
+        thread_id: &str,
+        messages: i32,
+        members: i32,
+    ) -> Result<Channel> {
+        self.col::<Channel>(COL)
+            .find_one_and_update(
+                doc! { "_id": thread_id, "channel_type": "Thread" },
+                doc! {
+                    "$inc": {
+                        "message_count": messages,
+                        "member_count": members,
+                    }
+                },
+            )
+            .return_document(ReturnDocument::After)
+            .await
+            .map_err(|_| create_database_error!("find_one_and_update", COL))?
+            .ok_or_else(|| create_error!(NotFound))
+    }
 }
 
 impl MongoDb {
+    async fn find_channels(
+        &self,
+        filter: Document,
+        options: Option<FindOptions>,
+    ) -> Result<Vec<Channel>> {
+        Ok(self
+            .col::<Channel>(COL)
+            .find(filter)
+            .with_options(options)
+            .await
+            .map_err(|_| create_database_error!("find", COL))?
+            .filter_map(|s| async { s.ok() })
+            .collect()
+            .await)
+    }
+
     pub async fn delete_associated_channel_objects(&self, id: Bson) -> Result<()> {
         // Delete all invites to these channels.
         self.col::<Document>("channel_invites")

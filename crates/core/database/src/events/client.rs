@@ -7,8 +7,8 @@ use revolt_models::v0::{
     FieldsChannel, FieldsMember, FieldsMessage, FieldsRole, FieldsServer, FieldsUser,
     FieldsWebhook, Member, MemberCompositeKey, Message, PartialChannel, PartialEmoji,
     PartialMember, PartialMessage, PartialRole, PartialServer, PartialUser, PartialUserVoiceState,
-    PartialWebhook, PolicyChange, RemovalIntention, Report, Server, User, UserSettings,
-    UserVoiceState, Webhook,
+    PartialWebhook, PolicyChange, RemovalIntention, Report, Server, ThreadMember, User,
+    UserSettings, UserVoiceState, Webhook,
 };
 
 use crate::{Account, Database, Session};
@@ -82,6 +82,9 @@ pub enum EventV1 {
         emojis: Option<Vec<Emoji>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         voice_states: Option<Vec<ChannelVoiceState>>,
+        /// Our memberships of the threads in `channels`
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread_members: Option<Vec<ThreadMember>>,
 
         #[serde(skip_serializing_if = "Option::is_none")]
         user_settings: Option<UserSettings>,
@@ -308,6 +311,23 @@ pub enum EventV1 {
     ChannelStopTyping {
         id: String,
         user: String,
+    },
+
+    /// Our membership of a thread changed
+    ///
+    /// `member` is None if we are no longer part of the thread.
+    ThreadMemberUpdate {
+        id: String,
+        member: Option<ThreadMember>,
+    },
+
+    /// Users joined or left a thread
+    ThreadMembersUpdate {
+        id: String,
+        server: String,
+        member_count: u32,
+        added: Vec<ThreadMember>,
+        removed: Vec<String>,
     },
 
     /// User acknowledged message in channel

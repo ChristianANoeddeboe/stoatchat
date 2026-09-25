@@ -137,6 +137,8 @@ auto_derived!(
             by: String,
             finished_at: Option<Timestamp>,
         },
+        #[serde(rename = "thread_created")]
+        ThreadCreated { name: String, by: String },
     }
 
     /// Name and / or avatar override information
@@ -382,6 +384,8 @@ auto_derived!(
         /// Message will mention all users who are online and can see the channel.
         /// This cannot be true if MentionsEveryone is true
         MentionsOnline = 3,
+        /// A thread was started from this message (the thread has the same id)
+        HasThread = 4,
     }
 
     /// Optional fields on message
@@ -455,6 +459,7 @@ impl From<SystemMessage> for String {
             SystemMessage::MessagePinned { .. } => "Message pinned.".to_string(),
             SystemMessage::MessageUnpinned { .. } => "Message unpinned.".to_string(),
             SystemMessage::CallStarted { .. } => "Call started.".to_string(),
+            SystemMessage::ThreadCreated { name, .. } => format!("Started a thread: {name}"),
         }
     }
 }

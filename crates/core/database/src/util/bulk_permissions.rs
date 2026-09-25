@@ -1,4 +1,7 @@
-use std::{collections::HashMap, hash::RandomState};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::RandomState,
+};
 
 use revolt_permissions::{
     ChannelPermission, ChannelType, Override, OverrideField, PermissionValue, ALLOW_IN_TIMEOUT,
@@ -144,6 +147,10 @@ impl<'z> BulkDatabasePermissionQuery<'z> {
                 Channel::TextChannel {
                     default_permissions,
                     ..
+                }
+                | Channel::ForumChannel {
+                    default_permissions,
+                    ..
                 } => default_permissions.unwrap_or_default().into(),
                 _ => Default::default(),
             }
@@ -159,7 +166,10 @@ impl<'z> BulkDatabasePermissionQuery<'z> {
                 Channel::DirectMessage { .. } => ChannelType::DirectMessage,
                 Channel::Group { .. } => ChannelType::Group,
                 Channel::SavedMessages { .. } => ChannelType::SavedMessages,
-                Channel::TextChannel { .. } => ChannelType::ServerChannel,
+                Channel::TextChannel { .. } | Channel::ForumChannel { .. } => {
+                    ChannelType::ServerChannel
+                }
+                Channel::Thread { .. } => ChannelType::Thread,
             }
         } else {
             ChannelType::Unknown
@@ -172,6 +182,9 @@ impl<'z> BulkDatabasePermissionQuery<'z> {
         if let Some(channel) = &self.channel {
             match channel {
                 Channel::TextChannel {
+                    role_permissions, ..
+                }
+                | Channel::ForumChannel {
                     role_permissions, ..
                 } => role_permissions,
                 _ => panic!("Not supported for non-server channels"),
@@ -188,18 +201,60 @@ async fn calculate_members_permissions<'a>(
 ) -> HashMap<String, PermissionValue> {
     let mut resp = HashMap::new();
 
-    let (_, channel_role_permissions, channel_default_permissions) = match query
+    let channel = query
         .channel
         .as_ref()
         .expect("A channel must be assigned to calculate channel permissions")
-        .clone()
-    {
-        Channel::TextChannel {
+        .clone();
+
+    // Threads use the overrides of their parent channel
+    let (thread, permission_channel) = match &channel {
+        Channel::Thread {
             id,
+            parent,
+            owner,
+            private,
+            locked,
+            ..
+        } => {
+            let parent = query
+                .database
+                .fetch_channel(parent)
+                .await
+                .expect("Failed to get data from the db");
+
+            let members: Option<HashSet<String>> = if *private {
+                let mut members: HashSet<String> = query
+                    .database
+                    .fetch_thread_members(id)
+                    .await
+                    .expect("Failed to get data from the db")
+                    .into_iter()
+                    .map(|member| member.id.user)
+                    .collect();
+
+                members.insert(owner.clone());
+                Some(members)
+            } else {
+                None
+            };
+
+            (Some((members, *locked)), parent)
+        }
+        _ => (None, channel),
+    };
+
+    let (channel_role_permissions, channel_default_permissions) = match permission_channel {
+        Channel::TextChannel {
             role_permissions,
             default_permissions,
             ..
-        } => (id, role_permissions, default_permissions),
+        }
+        | Channel::ForumChannel {
+            role_permissions,
+            default_permissions,
+            ..
+        } => (role_permissions, default_permissions),
         _ => panic!("Calculation of member permissions must be done on a server channel"),
     };
 
@@ -306,10 +361,58 @@ async fn calculate_members_permissions<'a>(
             permission.apply(role_override)
         }
 
+        if let Some((members, locked)) = &thread {
+            apply_thread_permissions(
+                &mut permission,
+                members.as_ref().map(|m| m.contains(&user.id)),
+                *locked,
+            );
+        }
+
         resp.insert(user.id.clone(), permission);
     }
 
     resp
+}
+
+/// Narrow down parent channel permissions to those of a thread
+///
+/// `member` is None for public threads, otherwise whether the user is part of the private thread.
+/// Mirrors the thread rules in revolt_permissions::calculate_channel_permissions.
+fn apply_thread_permissions(permission: &mut PermissionValue, member: Option<bool>, locked: bool) {
+    if !permission.has_channel_permission(ChannelPermission::ViewChannel) {
+        permission.revoke_all();
+        return;
+    }
+
+    let manage_threads = permission.has_channel_permission(ChannelPermission::ManageThreads);
+    if member == Some(false) && !manage_threads {
+        permission.revoke_all();
+        return;
+    }
+
+    let send = permission.has_channel_permission(ChannelPermission::SendMessagesInThreads);
+    permission.revoke(
+        ChannelPermission::SendMessage
+            + ChannelPermission::ManageChannel
+            + ChannelPermission::ManagePermissions
+            + ChannelPermission::ManageWebhooks
+            + ChannelPermission::InviteOthers
+            + ChannelPermission::CreatePublicThreads
+            + ChannelPermission::CreatePrivateThreads,
+    );
+
+    if send {
+        permission.allow(ChannelPermission::SendMessage as u64);
+    }
+
+    if manage_threads {
+        permission.allow(ChannelPermission::ManageChannel as u64);
+    }
+
+    if locked && !manage_threads {
+        permission.revoke(ChannelPermission::SendMessage + ChannelPermission::React);
+    }
 }
 
 /// Calculates a member's server permissions

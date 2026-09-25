@@ -43,6 +43,8 @@ pub struct Cache {
     pub channels: HashMap<String, Channel>,
     pub members: HashMap<String, Member>,
     pub servers: HashMap<String, Server>,
+    /// Ids of threads we are a member of
+    pub thread_members: HashSet<String>,
 
     pub seen_events: LruCache<String, ()>,
 }
@@ -67,6 +69,7 @@ impl Default for Cache {
             channels: Default::default(),
             members: Default::default(),
             servers: Default::default(),
+            thread_members: Default::default(),
 
             seen_events: LruCache::new(NonZeroUsize::new(2048).unwrap()),
         }

@@ -24,6 +24,10 @@ pub async fn create_database(db: &MongoDb) {
         .await
         .expect("Failed to create messages collection.");
 
+    db.create_collection("thread_members")
+        .await
+        .expect("Failed to create thread_members collection.");
+
     db.create_collection("servers")
         .await
         .expect("Failed to create servers collection.");
@@ -219,6 +223,51 @@ pub async fn create_database(db: &MongoDb) {
     })
     .await
     .expect("Failed to create server_members index.");
+
+    db.run_command(doc! {
+        "createIndexes": "thread_members",
+        "indexes": [
+            {
+                "key": {
+                    "_id.thread": 1_i32,
+                    "_id.user": 1_i32,
+                },
+                "name": "compound_id"
+            },
+            {
+                "key": {
+                    "_id.user": 1_i32,
+                },
+                "name": "user_id"
+            }
+        ]
+    })
+    .await
+    .expect("Failed to create thread_members index.");
+
+    db.run_command(doc! {
+        "createIndexes": "channels",
+        "indexes": [
+            {
+                "key": {
+                    "parent": 1_i32,
+                    "archived": 1_i32,
+                    "archived_at": -1_i32,
+                },
+                "name": "thread_parent"
+            },
+            {
+                "key": {
+                    "channel_type": 1_i32,
+                    "archived": 1_i32,
+                    "server": 1_i32,
+                },
+                "name": "active_threads"
+            }
+        ]
+    })
+    .await
+    .expect("Failed to create channels thread index.");
 
     db.run_command(doc! {
         "createIndexes": "attachments",

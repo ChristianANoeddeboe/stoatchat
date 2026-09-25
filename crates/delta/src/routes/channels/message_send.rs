@@ -6,7 +6,7 @@ use revolt_database::util::permissions::DatabasePermissionQuery;
 use revolt_database::{
     util::idempotency::IdempotencyKey, util::reference::Reference, Database, User,
 };
-use revolt_database::{Channel, Interactions, Message, AMQP};
+use revolt_database::{iso8601_timestamp::Timestamp, Channel, Interactions, Message, PartialChannel, AMQP};
 use revolt_models::v0;
 use revolt_models::v0::ChannelSlowmode;
 use revolt_permissions::PermissionQuery;
@@ -37,7 +37,13 @@ pub async fn message_send(
     })?;
 
     // Ensure we have permissions to send a message
-    let channel = target.as_channel(db).await?;
+    let mut channel = target.as_channel(db).await?;
+
+    // Messages in forums are sent as posts
+    if let Channel::ForumChannel { .. } = channel {
+        return Err(create_error!(InvalidOperation));
+    }
+
     let mut query = DatabasePermissionQuery::new(db, &user).channel(&channel);
     let permissions = calculate_channel_permissions(&mut query).await;
     permissions.throw_if_lacking_channel_permission(ChannelPermission::SendMessage)?;
@@ -63,6 +69,11 @@ pub async fn message_send(
 
     if !permissions.has_channel_permission(ChannelPermission::BypassSlowmode) {
         if let Channel::TextChannel {
+            slowmode: Some(channel_slowmode),
+            id: channel_id,
+            ..
+        }
+        | Channel::Thread {
             slowmode: Some(channel_slowmode),
             id: channel_id,
             ..
@@ -173,23 +184,48 @@ pub async fn message_send(
         .as_ref()
         .map(|member| member.clone().into_owned().into());
 
-    Ok(Json(
-        Message::create_from_api(
-            db,
-            Some(amqp),
-            channel,
-            data,
-            v0::MessageAuthor::User(&author),
-            Some(model_user.clone()),
-            model_member.clone(),
-            user.limits().await,
-            idempotency,
-            permissions.has_channel_permission(ChannelPermission::SendEmbeds),
-            allow_mentions,
-        )
-        .await?
-        .into_model(Some(model_user), model_member),
-    ))
+    // Talking in a thread brings it back and joins it
+    if let Channel::Thread { archived, .. } = &channel {
+        if *archived {
+            channel
+                .update(
+                    db,
+                    PartialChannel {
+                        archived: Some(false),
+                        archived_at: Some(Timestamp::now_utc()),
+                        ..Default::default()
+                    },
+                    vec![],
+                )
+                .await?;
+        }
+
+        channel.add_thread_member(db, &user.id).await?;
+    }
+
+    let message = Message::create_from_api(
+        db,
+        Some(amqp),
+        channel.clone(),
+        data,
+        v0::MessageAuthor::User(&author),
+        Some(model_user.clone()),
+        model_member.clone(),
+        user.limits().await,
+        idempotency,
+        permissions.has_channel_permission(ChannelPermission::SendEmbeds),
+        allow_mentions,
+    )
+    .await?;
+
+    // Mentioned users are added to the thread
+    if channel.is_thread() {
+        for mention in message.mentions.iter().flatten() {
+            channel.add_thread_member(db, mention).await?;
+        }
+    }
+
+    Ok(Json(message.into_model(Some(model_user), model_member)))
 }
 
 #[cfg(test)]
@@ -268,6 +304,7 @@ mod test {
             last_message_id: None,
             voice: None,
             slowmode: None,
+            ..Default::default()
         };
         locked_channel
             .update(&harness.db, partial, vec![])
