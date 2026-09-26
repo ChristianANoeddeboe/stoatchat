@@ -9,7 +9,8 @@ use rocket::{Data, Request, Response, State};
 
 use revolt_rocket_okapi::r#gen::OpenApiGenerator;
 use revolt_rocket_okapi::request::{OpenApiFromRequest, RequestHeaderInput};
-use revolt_database::{Session, util::ip::rocket::to_real_ip};
+use revolt_config::config;
+use revolt_database::{Session, User, util::ip::rocket::to_real_ip};
 
 use crate::ratelimiter::RequestKind;
 use crate::ratelimiter::{RatelimitInformation, Ratelimiter};
@@ -34,15 +35,29 @@ impl<'r> FromRequest<'r> for Ratelimiter {
 
                 let storage = request.guard::<&State<RatelimitStorage>>().await.unwrap();
 
-                let identifier = if let Outcome::Success(session) = request.guard::<Session>().await
-                {
+                let (bucket, resource) = storage.resolver.resolve_bucket(request);
+                let mut limit = storage.resolver.resolve_bucket_limit(bucket);
+
+                // Bots authenticate with a token rather than a session, so bucket them by bot id.
+                // The `User` guard is cached per request, so routes don't look the bot up again.
+                let bot_id = if request.headers().contains("x-bot-token") {
+                    match request.guard::<User>().await {
+                        Outcome::Success(user) if user.bot.is_some() => Some(user.id),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                let identifier = if let Some(bot_id) = bot_id {
+                    let multiplier = config().await.api.ratelimits.bot_multiplier(&bot_id);
+                    limit = limit.saturating_mul(multiplier);
+                    bot_id
+                } else if let Outcome::Success(session) = request.guard::<Session>().await {
                     session.id
                 } else {
                     to_real_ip(request).await
                 };
-
-                let (bucket, resource) = storage.resolver.resolve_bucket(request);
-                let limit = storage.resolver.resolve_bucket_limit(bucket);
 
                 Ratelimiter::from(&storage.map, &identifier, limit, (bucket, resource))
             })

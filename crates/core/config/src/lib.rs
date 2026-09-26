@@ -276,6 +276,29 @@ pub struct Api {
     pub livekit: ApiLiveKit,
     pub users: ApiUsers,
     pub audit_logs: ApiAuditLogs,
+    pub ratelimits: ApiRatelimits,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ApiRatelimits {
+    /// Comma separated bot ids whose ratelimits are raised by `bot_multiplier`
+    pub boosted_bots: String,
+    pub bot_multiplier: u32,
+}
+
+impl ApiRatelimits {
+    /// Multiplier applied to a bot's ratelimits
+    pub fn bot_multiplier(&self, bot_id: &str) -> u32 {
+        if self
+            .boosted_bots
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .any(|id| !id.is_empty() && id == bot_id)
+        {
+            self.bot_multiplier.max(1)
+        } else {
+            1
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -595,10 +618,30 @@ macro_rules! configure {
 #[cfg(feature = "test")]
 #[cfg(test)]
 mod tests {
-    use crate::init;
+    use crate::{init, ApiRatelimits};
 
     #[tokio::test]
     async fn it_works() {
         init().await;
+    }
+
+    #[test]
+    fn bot_multiplier() {
+        let ratelimits = ApiRatelimits {
+            boosted_bots: "01AAA, 01BBB,01CCC".to_string(),
+            bot_multiplier: 20,
+        };
+
+        assert_eq!(ratelimits.bot_multiplier("01AAA"), 20);
+        assert_eq!(ratelimits.bot_multiplier("01BBB"), 20);
+        assert_eq!(ratelimits.bot_multiplier("01CCC"), 20);
+        assert_eq!(ratelimits.bot_multiplier("01DDD"), 1);
+        assert_eq!(ratelimits.bot_multiplier(""), 1);
+
+        let zero = ApiRatelimits {
+            boosted_bots: "01AAA".to_string(),
+            bot_multiplier: 0,
+        };
+        assert_eq!(zero.bot_multiplier("01AAA"), 1);
     }
 }

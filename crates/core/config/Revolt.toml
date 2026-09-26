@@ -100,6 +100,12 @@ expires_after = 2592000  # 30d
 # Minimum allowed length of usernames
 min_username_length = 2
 
+[api.ratelimits]
+# Bot ids (comma separated) that get higher ratelimits
+boosted_bots = ""
+# How many times the normal ratelimits boosted bots get
+bot_multiplier = 20
+
 [pushd]
 # this changes the names of the queues to not overlap 
 # prod/beta if they happen to be on the same exchange/instance.
