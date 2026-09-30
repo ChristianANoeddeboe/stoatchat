@@ -52,6 +52,10 @@ pub async fn create_database(db: &MongoDb) {
         .await
         .expect("Failed to create channel_webhooks collection.");
 
+    db.create_collection("server_commands")
+        .await
+        .expect("Failed to create server_commands collection.");
+
     db.create_collection("migrations")
         .await
         .expect("Failed to create migrations collection.");

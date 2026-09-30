@@ -4,22 +4,23 @@ pub use rocket::http::Status;
 pub use rocket::response::Redirect;
 use rocket::{Build, Rocket};
 
+mod account;
 mod bots;
 mod channels;
+mod commands;
 mod customisation;
 mod invites;
+mod mfa;
 mod onboard;
 mod policy;
 mod push;
 mod root;
 mod safety;
 mod servers;
+mod session;
 mod sync;
 mod users;
 mod webhooks;
-mod account;
-mod session;
-mod mfa;
 
 pub fn mount(config: Settings, mut rocket: Rocket<Build>) -> Rocket<Build> {
     let settings = OpenApiSettings::default();
@@ -33,6 +34,7 @@ pub fn mount(config: Settings, mut rocket: Rocket<Build>) -> Rocket<Build> {
             "/bots" => bots::routes(),
             "/channels" => channels::routes(),
             "/servers" => servers::routes(),
+            "/commands" => commands::routes(),
             "/invites" => invites::routes(),
             "/custom" => customisation::routes(),
             "/safety" => safety::routes(),
@@ -54,6 +56,7 @@ pub fn mount(config: Settings, mut rocket: Rocket<Build>) -> Rocket<Build> {
             "/bots" => bots::routes(),
             "/channels" => channels::routes(),
             "/servers" => servers::routes(),
+            "/commands" => commands::routes(),
             "/invites" => invites::routes(),
             "/custom" => customisation::routes(),
             "/safety" => safety::routes(),

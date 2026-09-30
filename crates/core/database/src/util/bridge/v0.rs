@@ -116,6 +116,48 @@ impl From<crate::Webhook> for Webhook {
     }
 }
 
+impl From<crate::Command> for Command {
+    fn from(value: crate::Command) -> Self {
+        Command {
+            id: value.id,
+            name: value.name,
+            description: value.description,
+            server_id: value.server_id,
+            owner_id: value.owner_id,
+        }
+    }
+}
+
+impl From<crate::PartialCommand> for PartialCommand {
+    fn from(value: crate::PartialCommand) -> Self {
+        PartialCommand {
+            id: value.id,
+            name: value.name,
+            description: value.description,
+            server_id: value.server_id,
+            owner_id: value.owner_id,
+        }
+    }
+}
+
+impl From<FieldsCommand> for crate::FieldsCommand {
+    fn from(value: FieldsCommand) -> Self {
+        match value {
+            FieldsCommand::Name => crate::FieldsCommand::Name,
+            FieldsCommand::Description => crate::FieldsCommand::Description,
+        }
+    }
+}
+
+impl From<crate::FieldsCommand> for FieldsCommand {
+    fn from(value: crate::FieldsCommand) -> Self {
+        match value {
+            crate::FieldsCommand::Name => FieldsCommand::Name,
+            crate::FieldsCommand::Description => FieldsCommand::Description,
+        }
+    }
+}
+
 impl From<crate::PartialWebhook> for PartialWebhook {
     fn from(value: crate::PartialWebhook) -> Self {
         PartialWebhook {

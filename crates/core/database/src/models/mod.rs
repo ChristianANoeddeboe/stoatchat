@@ -1,3 +1,5 @@
+mod account_invites;
+mod accounts;
 mod admin_migrations;
 mod audit_logs;
 mod bots;
@@ -9,21 +11,22 @@ mod emojis;
 mod file_hashes;
 mod files;
 mod messages;
+mod mfa_tickets;
 mod policy_changes;
 mod ratelimit_events;
 mod safety_reports;
 mod safety_snapshots;
 mod server_bans;
+mod server_commands;
 mod server_members;
 mod servers;
+mod sessions;
 mod thread_members;
 mod user_settings;
 mod users;
-mod accounts;
-mod account_invites;
-mod sessions;
-mod mfa_tickets;
 
+pub use account_invites::*;
+pub use accounts::*;
 pub use admin_migrations::*;
 pub use audit_logs::*;
 pub use bots::*;
@@ -35,20 +38,19 @@ pub use emojis::*;
 pub use file_hashes::*;
 pub use files::*;
 pub use messages::*;
+pub use mfa_tickets::*;
 pub use policy_changes::*;
 pub use ratelimit_events::*;
 pub use safety_reports::*;
 pub use safety_snapshots::*;
 pub use server_bans::*;
+pub use server_commands::*;
 pub use server_members::*;
 pub use servers::*;
+pub use sessions::*;
 pub use thread_members::*;
 pub use user_settings::*;
 pub use users::*;
-pub use accounts::*;
-pub use account_invites::*;
-pub use sessions::*;
-pub use mfa_tickets::*;
 
 use crate::{Database, ReferenceDb};
 
@@ -74,6 +76,7 @@ pub trait AbstractDatabase:
     + safety_reports::AbstractReport
     + safety_snapshots::AbstractSnapshot
     + server_bans::AbstractServerBans
+    + server_commands::AbstractCommands
     + server_members::AbstractServerMembers
     + servers::AbstractServers
     + thread_members::AbstractThreadMembers

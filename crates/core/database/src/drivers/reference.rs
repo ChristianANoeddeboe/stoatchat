@@ -3,9 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 use futures::lock::Mutex;
 
 use crate::{
-    Account, AccountInvite, AuditLogEntry, Bot, Channel, ChannelCompositeKey, ChannelUnread, Emoji,
-    File, FileHash, Invite, MFATicket, Member, MemberCompositeKey, Message, PolicyChange,
-    RatelimitEvent, Report, Server, ServerBan, Session, Snapshot, ThreadMember,
+    Account, AccountInvite, AuditLogEntry, Bot, Channel, ChannelCompositeKey, ChannelUnread,
+    Command, Emoji, File, FileHash, Invite, MFATicket, Member, MemberCompositeKey, Message,
+    PolicyChange, RatelimitEvent, Report, Server, ServerBan, Session, Snapshot, ThreadMember,
     ThreadMemberCompositeKey, User, UserSettings, Webhook,
 };
 
@@ -19,6 +19,7 @@ database_derived!(
         pub channel_invites: Arc<Mutex<HashMap<String, Invite>>>,
         pub channel_unreads: Arc<Mutex<HashMap<ChannelCompositeKey, ChannelUnread>>>,
         pub channel_webhooks: Arc<Mutex<HashMap<String, Webhook>>>,
+        pub server_commands: Arc<Mutex<HashMap<String, Command>>>,
         pub emojis: Arc<Mutex<HashMap<String, Emoji>>>,
         pub file_hashes: Arc<Mutex<HashMap<String, FileHash>>>,
         pub files: Arc<Mutex<HashMap<String, File>>>,
