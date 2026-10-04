@@ -8,6 +8,13 @@ use validator::Validate;
 /// # Create Bot
 ///
 /// Create a new Revolt bot.
+///
+/// If the caller is a human user, the new bot is owned by that user.
+/// If the caller is itself a bot (authenticated via `x-bot-token`),
+/// the new bot is created on behalf of that bot's human owner, so it
+/// appears in the owner's bot list and counts against the owner's bot
+/// limit. The created bot's token is returned so the calling bot can
+/// use it.
 #[openapi(tag = "Bots")]
 #[post("/create", data = "<info>")]
 pub async fn create_bot(
@@ -22,10 +29,20 @@ pub async fn create_bot(
         })
     })?;
 
-    let (bot, user) = Bot::create(db, info.name, &user, None).await?;
+    // If the requester is a bot, resolve and use its human owner so the
+    // newly created bot is attributed to a real user (which also keeps
+    // `Bot::create`'s IsBot invariant intact).
+    let (bot, bot_user) = if user.bot.is_some() {
+        let bot = db.fetch_bot(&user.id).await?;
+        let owner = db.fetch_user(&bot.owner).await?;
+        Bot::create(db, info.name, &owner, None).await?
+    } else {
+        Bot::create(db, info.name, &user, None).await?
+    };
+
     Ok(Json(v0::BotWithUserResponse {
         bot: bot.into(),
-        user: user.into_self(false).await,
+        user: bot_user.into_self(false).await,
     }))
 }
 
