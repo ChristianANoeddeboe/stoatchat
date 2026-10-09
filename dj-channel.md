@@ -93,12 +93,29 @@ deletes all queued files. Keyed off membership count, not live connections.
 - `POST /channels/{id}/dj/skip`
 - Member count: existing channel-membership pathway.
 
-## Android (highest-risk line item)
+## Android — playback spike (RESOLVED)
 
-Jetpack Compose, native codec, plus a **background-audio path** — the app must
-keep playing while minimised/backgrounded. Needs a playback-library decision
-(mpv-kotlin vs ExoPlayer vs MediaPlayer) and validation that the audio session
-survives focus loss. **Spike this before locking the Android approach.**
+**Result: no new playback library needed.** androidx.media3 (ExoPlayer) **1.9.2**
+is already the app's media engine: `composables/media/AudioPlayer.kt` (live,
+used for audio attachments via `MessageAttachment.kt`) and
+`activities/media/VideoViewActivity.kt` both build `ExoPlayer` from a
+`MediaItem.fromUri(url)`. HLS + okhttp datasource deps are already in
+`gradle/libs.versions.toml`. So:
+
+- MP3 streams play natively (Android codec via MediaCodec).
+- Range-request seeking works (media3 HTTP data source; okhttp datasource
+  available if needed).
+- ExoPlayer runs its own media session + audio renderer, so it **keeps playing
+  when the app is backgrounded/minimised** — the feared line item.
+
+What is genuinely new on Android (moderate, not risky):
+- A **channel-scoped continuous player** (singleton per DJ channel) that
+  advances on `DJ.TrackStarted` events and seeks on mid-song join, instead of
+  the per-attachment `AudioPlayer`. Mid-song join = `prepare()` then
+  `seekTo(positionMs)` from the event's `at` timestamp.
+- Queue UI: upload control replacing the composer in the DJ channel view.
+
+No playback-library research/decision remains open.
 
 ## Open (post-v1) considerations
 - None locked. Possible future: skip-timeout votes, playlists, DJ admin
