@@ -43,6 +43,11 @@ pub async fn task(db: Database, _: revolt_database::AMQP) -> Result<()> {
                         continue;
                     };
 
+                    // 0 = never auto archive
+                    if *auto_archive_minutes == 0 {
+                        continue;
+                    }
+
                     let limit = Duration::from_secs(*auto_archive_minutes as u64 * 60);
                     let Some(last) = last_activity(&thread) else {
                         continue;

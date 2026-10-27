@@ -325,8 +325,10 @@ auto_derived!(
 /// Default auto archive duration of new threads (3 days)
 pub const DEFAULT_AUTO_ARCHIVE_MINUTES: u32 = 4320;
 
-/// Allowed auto archive durations of threads (1 hour, 1 day, 3 days, 1 week)
-pub const AUTO_ARCHIVE_MINUTES: [u32; 4] = [60, 1440, 4320, 10080];
+/// Allowed auto archive durations of threads (never, 1 hour, 1 day, 3 days, 1 week)
+///
+/// `0` means the thread is never auto archived.
+pub const AUTO_ARCHIVE_MINUTES: [u32; 5] = [0, 60, 1440, 4320, 10080];
 
 #[allow(clippy::disallowed_methods)]
 impl Channel {
