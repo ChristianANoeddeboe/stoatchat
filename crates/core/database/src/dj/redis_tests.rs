@@ -428,3 +428,245 @@ async fn clear_all_wipes_dj_keys_only() {
 
     let _: u32 = conn.del(&survivor).await.unwrap();
 }
+
+#[tokio::test]
+async fn conditional_clear_only_fires_while_the_channel_is_empty() {
+    let _guard = SERIAL.lock().await;
+    if !redis().await {
+        return;
+    }
+
+    let channel = unique_channel();
+
+    // A track is playing and somebody is a member
+    add_member(&channel, "user-a").await.unwrap();
+    set_now(
+        &channel,
+        &DjNowPlaying {
+            track: track("t1", "user-a"),
+            started_at: unix_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    add_vote(&channel, "t1", "user-a").await.unwrap();
+
+    // The engine must not be able to clear a channel which still has members
+    assert!(!clear_channel_if_empty(&channel).await.unwrap());
+    assert!(is_member(&channel, "user-a").await.unwrap());
+    assert!(get_now(&channel).await.unwrap().is_some());
+
+    // Once the last member is gone it clears atomically
+    remove_member(&channel, "user-a").await.unwrap();
+
+    assert!(clear_channel_if_empty(&channel).await.unwrap());
+
+    assert_absent(&[
+        members_key(&channel),
+        queue_key(&channel),
+        now_key(&channel),
+        seq_key(&channel),
+        empty_since_key(&channel),
+        votes_key(&channel, "t1"),
+    ])
+    .await;
+
+    // Clearing an already empty channel is idempotent
+    assert!(clear_channel_if_empty(&channel).await.unwrap());
+}
+
+#[tokio::test]
+async fn votes_only_count_while_the_track_is_playing() {
+    let _guard = SERIAL.lock().await;
+    if !redis().await {
+        return;
+    }
+
+    let channel = unique_channel();
+
+    // Nothing is playing
+    assert_eq!(
+        cast_vote(&channel, "t1", "user-a").await.unwrap(),
+        VoteOutcome::NoTrack
+    );
+
+    set_now(
+        &channel,
+        &DjNowPlaying {
+            track: track("t1", "user-a"),
+            started_at: unix_ms(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // A vote for the playing track counts
+    assert_eq!(
+        cast_vote(&channel, "t1", "user-a").await.unwrap(),
+        VoteOutcome::Cast(1)
+    );
+    // and is idempotent per user
+    assert_eq!(
+        cast_vote(&channel, "t1", "user-a").await.unwrap(),
+        VoteOutcome::Cast(1)
+    );
+    assert_eq!(
+        cast_vote(&channel, "t1", "user-b").await.unwrap(),
+        VoteOutcome::Cast(2)
+    );
+
+    // A vote against a track which is not the current one must not land, and
+    // must not leave a `dj_votes` key behind
+    assert_eq!(
+        cast_vote(&channel, "t0", "user-a").await.unwrap(),
+        VoteOutcome::TrackChanged
+    );
+    assert_absent(&[votes_key(&channel, "t0")]).await;
+
+    // Once the track ends its votes no longer count for anything
+    clear_now(&channel).await.unwrap();
+    assert_eq!(
+        cast_vote(&channel, "t1", "user-a").await.unwrap(),
+        VoteOutcome::NoTrack
+    );
+
+    clear_channel(&channel).await.unwrap();
+}
+
+#[tokio::test]
+async fn member_channels_lists_only_channels_with_members() {
+    let _guard = SERIAL.lock().await;
+    if !redis().await {
+        return;
+    }
+
+    let occupied = unique_channel();
+    let emptied = unique_channel();
+
+    add_member(&occupied, "user-a").await.unwrap();
+    add_member(&emptied, "user-b").await.unwrap();
+    remove_member(&emptied, "user-b").await.unwrap();
+
+    let channels = member_channels().await.unwrap();
+
+    assert!(channels.contains(&occupied));
+    assert!(
+        !channels.contains(&emptied),
+        "a channel whose member set is empty must not be swept"
+    );
+
+    clear_channel(&occupied).await.unwrap();
+}
+
+/// DJ channel document used by the event tests
+fn dj_channel(id: &str) -> crate::Channel {
+    crate::Channel::TextChannel {
+        id: id.to_string(),
+        server: "server-1".to_string(),
+        name: "music".to_string(),
+        description: None,
+        icon: None,
+        last_message_id: None,
+        default_permissions: None,
+        role_permissions: Default::default(),
+        nsfw: false,
+        voice: None,
+        dj: Some(crate::DjInformation::default()),
+        slowmode: None,
+        default_auto_archive_minutes: None,
+    }
+}
+
+#[tokio::test]
+async fn a_closed_socket_announces_a_member_leaving_and_refreshes_the_vote() {
+    let _guard = SERIAL.lock().await;
+    if !redis().await {
+        return;
+    }
+
+    let channel = unique_channel();
+    let channel_doc = dj_channel(&channel);
+
+    // Two members, one of them playing a track, and one vote cast
+    add_member(&channel, "leaver").await.unwrap();
+    add_member(&channel, "stayer").await.unwrap();
+    set_now(
+        &channel,
+        &DjNowPlaying {
+            track: track("t1", "stayer"),
+            started_at: unix_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    add_vote(&channel, "t1", "stayer").await.unwrap();
+
+    // Subscribe *before* the removal, exactly like a connected client
+    let mut sub = redis_kiss::open_pubsub_connection().await.expect("pubsub");
+    sub.psubscribe("stayer!").await.expect("psubscribe");
+
+    let count = crate::dj::events::remove_member_and_announce(&channel_doc, "leaver")
+        .await
+        .expect("remove member");
+    assert_eq!(count, 1);
+
+    use futures::StreamExt;
+
+    let mut messages = sub.on_message();
+    let mut seen_left = false;
+    let mut seen_vote = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+
+    while tokio::time::Instant::now() < deadline && !(seen_left && seen_vote) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Ok(Some(message)) = tokio::time::timeout(remaining, messages.next()).await else {
+            break;
+        };
+
+        let Ok(payload) = message.get_payload::<String>() else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<crate::events::client::EventV1>(&payload) else {
+            continue;
+        };
+
+        match event {
+            crate::events::client::EventV1::DjMemberLeft {
+                user, count, channel, ..
+            } => {
+                assert_eq!(user, "leaver");
+                assert_eq!(count, 1);
+                assert_eq!(channel, channel_doc.id());
+                seen_left = true;
+            }
+            crate::events::client::EventV1::DjVote {
+                votes, needed, voters, ..
+            } => {
+                // One member left, so one vote is enough
+                assert_eq!(votes, 1);
+                assert_eq!(needed, 1);
+                assert_eq!(voters, vec!["stayer".to_string()]);
+                seen_vote = true;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(seen_left, "the remaining member must see DjMemberLeft");
+    assert!(
+        seen_vote,
+        "the skip tally must be refreshed when a member leaves"
+    );
+
+    // The empty grace period starts when the last member leaves
+    crate::dj::events::remove_member_and_announce(&channel_doc, "stayer")
+        .await
+        .expect("remove last member");
+
+    assert!(
+        get_empty_since(&channel).await.unwrap().is_some(),
+        "an emptied channel arms the grace period"
+    );
+
+    clear_channel(&channel).await.unwrap();
+}

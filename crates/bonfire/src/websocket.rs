@@ -202,9 +202,12 @@ pub async fn client(db: &'static Database, stream: TcpStream, addr: SocketAddr) 
         state.broadcast_presence_change(false).await;
 
         // DJ membership is not heartbeat based, so a closed socket removes the
-        // user from every DJ channel they had joined. The playback engine
-        // notices within a tick and starts its empty-channel grace period.
-        if let Err(error) = revolt_database::dj::remove_user_from_all_channels(&user_id).await {
+        // user from every DJ channel they had joined. Each removal is announced
+        // to the remaining members (and refreshes the skip tally) so counts and
+        // `needed` never go stale; the 60 s reconciliation sweep catches any
+        // disconnect this path misses.
+        if let Err(error) = revolt_database::dj::events::remove_user_from_dj_channels(db, &user_id).await
+        {
             warn!("Failed to remove {user_id} from their DJ channels: {error}");
         }
     }

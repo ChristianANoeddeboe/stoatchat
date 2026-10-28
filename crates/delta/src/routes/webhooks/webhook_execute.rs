@@ -53,6 +53,8 @@ pub async fn webhook_execute(
     }
 
     let channel = db.fetch_channel(&webhook.channel_id).await?;
+    // A webhook must not be able to post into a DJ channel either
+    crate::routes::channels::resolve_postable_channel(&channel)?;
 
     Ok(Json(
         Message::create_from_api(

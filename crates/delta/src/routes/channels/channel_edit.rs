@@ -22,6 +22,7 @@ use crate::util::audit_log_reason::AuditLogReason;
 #[patch("/<target>", data = "<data>")]
 pub async fn edit(
     db: &State<Database>,
+    engine: &State<crate::dj::DjEngine>,
     voice_client: &State<VoiceClient>,
     amqp: &State<AMQP>,
     user: User,
@@ -501,7 +502,14 @@ pub async fn edit(
         None
     };
 
-    channel.update(db, partial.clone(), remove).await?;
+    channel.update(db, partial.clone(), remove.clone()).await?;
+
+    // Unsetting DJ state (or disabling it) must tear down playback and the
+    // channel's audio, not just the database document.
+    if remove.contains(&FieldsChannel::Dj) || channel.dj().is_some_and(|dj| !dj.enabled) {
+        engine.stop(channel.id());
+        crate::dj::clear_channel_state(channel.id()).await;
+    }
 
     if channel.voice().is_none() {
         delete_voice_channel(voice_client, &UserVoiceChannel::from_channel(&channel)).await?;

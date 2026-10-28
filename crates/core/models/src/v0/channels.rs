@@ -339,7 +339,11 @@ auto_derived!(
     pub struct DjTrack {
         /// Unique id of this track (`<seq>-<ulid>`)
         pub id: String,
-        /// Path of the (unencrypted) audio file, served from `/dj/<channel>/stream`
+        /// Route of the streaming endpoint for this track
+        ///
+        /// `/dj/<channel>/stream`: the audio itself requires the signed token
+        /// which is delivered in `DjNowPlaying`/`DjTrackStarted`, so this is
+        /// informational and must not be fetched directly.
         pub file: String,
         /// Display title of the track
         #[cfg_attr(feature = "serde", serde(default))]
@@ -427,6 +431,9 @@ auto_derived!(
         pub last_message_id: Option<String>,
         #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
         pub voice: Option<VoiceInformation>,
+        /// DJ settings, present only on DJ-enabled text channels
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub dj: Option<DjInformation>,
         #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
         pub slowmode: Option<u64>,
         #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -469,6 +476,8 @@ auto_derived!(
         Icon,
         DefaultPermissions,
         Voice,
+        /// Removes DJ state, turning the channel back into a normal text channel
+        Dj,
         Slowmode,
         DefaultReactionEmoji,
         DefaultThreadSlowmode,

@@ -397,6 +397,8 @@ auto_derived!(
         Icon,
         DefaultPermissions,
         Voice,
+        /// Removes DJ state, turning the channel back into a normal text channel
+        Dj,
         Slowmode,
         DefaultReactionEmoji,
         DefaultThreadSlowmode,
@@ -1049,6 +1051,12 @@ impl Channel {
                 }
                 _ => {}
             },
+            FieldsChannel::Dj => match self {
+                Self::TextChannel { dj, .. } => {
+                    dj.take();
+                }
+                _ => {}
+            },
             FieldsChannel::Slowmode => match self {
                 Self::TextChannel { slowmode, .. }
                 | Self::ForumChannel { slowmode, .. }
@@ -1452,7 +1460,7 @@ impl Channel {
                     before.voice = voice.clone();
                 };
 
-                if partial.dj.is_some() {
+                if partial.dj.is_some() || remove.contains(&FieldsChannel::Dj) {
                     before.dj = dj.clone();
                 };
 
@@ -1767,6 +1775,7 @@ impl IntoDocumentPath for FieldsChannel {
             FieldsChannel::Icon => "icon",
             FieldsChannel::DefaultPermissions => "default_permissions",
             FieldsChannel::Voice => "voice",
+            FieldsChannel::Dj => "dj",
             FieldsChannel::Slowmode => "slowmode",
             FieldsChannel::DefaultReactionEmoji => "default_reaction_emoji",
             FieldsChannel::DefaultThreadSlowmode => "default_thread_slowmode",

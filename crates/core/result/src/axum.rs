@@ -92,7 +92,7 @@ impl IntoResponse for Error {
             ErrorType::NotADjChannel => StatusCode::BAD_REQUEST,
             ErrorType::DjDisabled => StatusCode::BAD_REQUEST,
             ErrorType::NotInDjChannel => StatusCode::FORBIDDEN,
-            ErrorType::CannotJoinDjChannel => StatusCode::BAD_REQUEST,
+            ErrorType::CannotJoinDjChannel => StatusCode::CONFLICT,
             ErrorType::CannotSendMessageToDjChannel => StatusCode::BAD_REQUEST,
             ErrorType::DjQueueFull { .. } => StatusCode::BAD_REQUEST,
             ErrorType::DjStorageFull { .. } => StatusCode::BAD_REQUEST,

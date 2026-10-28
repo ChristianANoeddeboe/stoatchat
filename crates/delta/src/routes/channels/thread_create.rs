@@ -65,6 +65,10 @@ pub async fn create_thread_from_message(
         return Err(create_error!(InvalidOperation));
     }
 
+    // Threads are messages with extra steps: they must not be creatable in a
+    // DJ channel either.
+    super::resolve_postable_channel(&channel)?;
+
     let mut query = DatabasePermissionQuery::new(db, &user).channel(&channel);
     let permissions = calculate_channel_permissions(&mut query).await;
     permissions.throw_if_lacking_channel_permission(ChannelPermission::ViewChannel)?;
@@ -126,6 +130,8 @@ pub async fn create_thread(
     let name = validate_thread(&data)?;
 
     let channel = target.as_channel(db).await?;
+    super::resolve_postable_channel(&channel)?;
+
     let mut query = DatabasePermissionQuery::new(db, &user).channel(&channel);
     let permissions = calculate_channel_permissions(&mut query).await;
     permissions.throw_if_lacking_channel_permission(ChannelPermission::ViewChannel)?;

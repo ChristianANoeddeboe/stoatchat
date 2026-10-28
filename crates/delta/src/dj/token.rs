@@ -17,8 +17,12 @@ use sha2::{Digest, Sha256};
 /// Environment variable holding the token signing secret
 pub const DJ_STREAM_SECRET_ENV: &str = "DJ_STREAM_SECRET";
 
-/// Extra lifetime added on top of the channel's maximum track duration
-pub const TOKEN_TTL_MARGIN_SECS: u64 = 60;
+/// Lifetime of a stream token, in seconds
+///
+/// Deliberately short: the engine re-signs a URL on every heartbeat (every
+/// [`crate::dj::HEARTBEAT_MS`] ms), so a leaked URL stops working within a few
+/// minutes instead of staying valid for the whole track plus an hour.
+pub const TOKEN_TTL_SECS: u64 = 180;
 
 static SECRET: OnceCell<Vec<u8>> = OnceCell::new();
 
@@ -124,9 +128,8 @@ pub fn verify(channel: &str, token: &str) -> Option<String> {
 }
 
 /// Build a signed stream URL for the given track
-pub fn stream_url(api_url: &str, channel: &str, track: &str, max_track_seconds: u32) -> String {
-    let ttl = max_track_seconds as u64 + TOKEN_TTL_MARGIN_SECS;
-    let expiry = unix_secs() + ttl;
+pub fn stream_url(api_url: &str, channel: &str, track: &str) -> String {
+    let expiry = unix_secs() + TOKEN_TTL_SECS;
     let token = sign(channel, track, expiry);
 
     format!(
@@ -136,9 +139,9 @@ pub fn stream_url(api_url: &str, channel: &str, track: &str, max_track_seconds: 
     )
 }
 
-/// Lifetime of a stream token for the given channel settings
-pub fn token_ttl(max_track_seconds: u32) -> Duration {
-    Duration::from_secs(max_track_seconds as u64 + TOKEN_TTL_MARGIN_SECS)
+/// Lifetime of a stream token
+pub fn token_ttl() -> Duration {
+    Duration::from_secs(TOKEN_TTL_SECS)
 }
 
 #[cfg(test)]
@@ -213,14 +216,14 @@ mod tests {
 
     #[test]
     fn stream_url_contains_token() {
-        let url = stream_url("https://api.example.com/", "chan", "track", 10);
+        let url = stream_url("https://api.example.com/", "chan", "track");
 
         assert!(url.starts_with("https://api.example.com/dj/chan/stream?token="));
     }
 
     #[test]
     fn stream_url_signature_verifies_and_carries_the_track() {
-        let url = stream_url("https://api.example.com", "chan", "track-1", 10);
+        let url = stream_url("https://api.example.com", "chan", "track-1");
         let token = url.split_once("token=").expect("token in url").1;
 
         assert_eq!(verify("chan", token).as_deref(), Some("track-1"));
@@ -319,8 +322,13 @@ mod tests {
     }
 
     #[test]
-    fn token_ttl_covers_the_track_plus_the_margin() {
-        assert_eq!(token_ttl(900), Duration::from_secs(960));
-        assert_eq!(token_ttl(0), Duration::from_secs(TOKEN_TTL_MARGIN_SECS));
+    fn token_ttl_is_short_but_outlives_several_heartbeats() {
+        let ttl = token_ttl();
+
+        assert_eq!(ttl, Duration::from_secs(TOKEN_TTL_SECS));
+        // Long enough that a client which misses a heartbeat or two can still
+        // seek, short enough that a leaked URL is not usable for an hour.
+        assert!(ttl >= Duration::from_millis(crate::dj::HEARTBEAT_MS * 4));
+        assert!(ttl <= Duration::from_secs(300));
     }
 }

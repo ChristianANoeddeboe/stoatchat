@@ -80,6 +80,8 @@ pub fn routes() -> (Vec<Route>, OpenApi) {
         dj::queue::queue,
         dj::skip::skip,
         dj::settings::edit,
+        dj::settings::enable,
+        dj::settings::disable,
     ]
 }
 
@@ -89,8 +91,11 @@ pub fn routes() -> (Vec<Route>, OpenApi) {
 /// join voice-style and upload tracks instead. Old clients which still render
 /// them as text channels get a clear error rather than silently accumulating
 /// messages no client will show.
+///
+/// Only **enabled** DJ channels are read-only: `enabled = false` is the admin's
+/// off switch, which restores normal text behaviour until it is turned back on.
 pub(crate) fn resolve_postable_channel(channel: &revolt_database::Channel) -> Result<()> {
-    if channel.dj().is_some() {
+    if channel.is_dj_channel() {
         return Err(create_error!(CannotSendMessageToDjChannel));
     }
 
@@ -141,19 +146,14 @@ mod tests {
     }
 
     #[test]
-    fn disabled_dj_channels_still_reject_posts() {
-        // `enabled: false` blocks joins, but the channel is still a DJ channel
-        // and must not silently become a normal text channel again.
-        let error = resolve_postable_channel(&text_channel(Some(DjInformation {
+    fn disabled_dj_channels_accept_posts_again() {
+        // `enabled: false` is the admin's off switch: the channel keeps its DJ
+        // settings, but behaves like a normal text channel until re-enabled.
+        resolve_postable_channel(&text_channel(Some(DjInformation {
             enabled: false,
             ..Default::default()
         })))
-        .expect_err("a disabled DJ channel is still read-only");
-
-        assert!(matches!(
-            error.error_type,
-            ErrorType::CannotSendMessageToDjChannel
-        ));
+        .expect("a disabled DJ channel accepts messages again");
     }
 
     #[test]

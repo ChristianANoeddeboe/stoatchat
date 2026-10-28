@@ -77,6 +77,9 @@ pub async fn web() -> Rocket<Build> {
     let dj_engine = dj::DjEngine::new(config.hosts.api.clone());
     dj_engine.wipe_all().await;
     dj_engine.spawn_sweeper();
+    // Membership is not heartbeat based: reconcile against live sockets so a
+    // socket which dies uncleanly does not leave a phantom member behind.
+    dj::spawn_reconciler(dj_engine.clone(), db.clone());
 
     if !dj::transcode::check_available().await {
         log::error!("DJ channel uploads are unavailable until ffmpeg is installed.");

@@ -1,9 +1,9 @@
-use revolt_database::{dj, events::client::EventV1, util::reference::Reference, Database, User};
+use revolt_database::{dj, util::reference::Reference, Database, User};
 use revolt_result::{create_error, Result};
 use rocket::State;
 use rocket_empty::EmptyResponse;
 
-use crate::dj::{publish_to_members, DjEngine};
+use crate::dj::DjEngine;
 
 /// # Leave DJ Channel
 ///
@@ -25,30 +25,10 @@ pub async fn leave(
         return Err(create_error!(NotADjChannel));
     }
 
-    let count = dj::remove_member(channel.id(), &user.id).await?;
-
-    if count == 0 {
-        dj::set_empty_since(channel.id(), dj::unix_ms()).await?;
-    }
-
-    publish_to_members(
-        channel.id(),
-        EventV1::DjMemberLeft {
-            channel: channel.id().to_string(),
-            user: user.id.clone(),
-            count,
-        },
-    )
-    .await;
-
-    // Also tell the leaving user's other sessions to close their player
-    EventV1::DjMemberLeft {
-        channel: channel.id().to_string(),
-        user: user.id.clone(),
-        count,
-    }
-    .private(user.id.clone())
-    .await;
+    // Removes the member, announces it to the remaining members (and to the
+    // leaver's other sessions), arms the empty-channel grace period and
+    // refreshes the skip tally while a track is playing.
+    dj::events::remove_member_and_announce(&channel, &user.id).await?;
 
     engine.notify(channel.id());
 

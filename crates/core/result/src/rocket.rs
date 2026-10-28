@@ -94,7 +94,7 @@ impl<'r> Responder<'r, 'static> for Error {
             ErrorType::NotADjChannel => Status::BadRequest,
             ErrorType::DjDisabled => Status::BadRequest,
             ErrorType::NotInDjChannel => Status::Forbidden,
-            ErrorType::CannotJoinDjChannel => Status::BadRequest,
+            ErrorType::CannotJoinDjChannel => Status::Conflict,
             ErrorType::CannotSendMessageToDjChannel => Status::BadRequest,
             ErrorType::DjQueueFull { .. } => Status::BadRequest,
             ErrorType::DjStorageFull { .. } => Status::BadRequest,
@@ -151,5 +151,31 @@ impl<'r> Responder<'r, 'static> for Error {
             .header(ContentType::new("application", "json"))
             .status(status)
             .ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rocket::http::Status;
+    use rocket::local::blocking::Client;
+
+    use crate::{create_error, Error};
+
+    #[rocket::get("/cannot-join-dj")]
+    fn cannot_join_dj() -> Result<&'static str, Error> {
+        Err(create_error!(CannotJoinDjChannel))
+    }
+
+    #[test]
+    fn a_full_dj_channel_is_a_conflict() {
+        // "The channel is full" is a state conflict, not a malformed request:
+        // clients retry once somebody leaves rather than fixing their payload.
+        let client = Client::tracked(rocket::build().mount("/", rocket::routes![cannot_join_dj]))
+            .expect("valid rocket");
+
+        assert_eq!(
+            client.get("/cannot-join-dj").dispatch().status(),
+            Status::Conflict
+        );
     }
 }

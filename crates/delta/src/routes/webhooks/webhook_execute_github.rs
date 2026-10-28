@@ -772,6 +772,8 @@ pub async fn webhook_execute_github(
     webhook.assert_token(token)?;
 
     let channel = db.fetch_channel(&webhook.channel_id).await?;
+    // A webhook must not be able to post into a DJ channel either
+    crate::routes::channels::resolve_postable_channel(&channel)?;
     let event = convert_event(&data, &event)?;
 
     let sendable_embed = match event.event {

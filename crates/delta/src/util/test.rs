@@ -54,6 +54,23 @@ impl TestHarness {
         }
     }
 
+    /// Whether the database a route test needs is reachable
+    ///
+    /// Route tests run against a real MongoDB. Developers without one should
+    /// see a skip rather than a 30 second server-selection timeout followed by
+    /// a failure, which looks like a broken change.
+    pub async fn database_available() -> bool {
+        use rocket::tokio::net::TcpStream;
+
+        match TcpStream::connect("127.0.0.1:27017").await {
+            Ok(_) => true,
+            Err(_) => {
+                eprintln!("skipping route test: no MongoDB reachable on 127.0.0.1:27017");
+                false
+            }
+        }
+    }
+
     pub fn rand_string() -> String {
         let mut rng = rand::thread_rng();
         (&mut rng)

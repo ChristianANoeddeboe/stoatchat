@@ -335,6 +335,21 @@ impl Member {
             }
         }
 
+        // A departed member must not keep a slot or a vote in this server's DJ
+        // channels; announce the removal to whoever is still listening.
+        if let Err(error) = crate::dj::events::remove_user_from_server_dj_channels(
+            db,
+            server,
+            &self.id.user,
+        )
+        .await
+        {
+            log::warn!(
+                "Failed to remove {} from their DJ channels: {error}",
+                self.id.user
+            );
+        }
+
         Ok(())
     }
 }

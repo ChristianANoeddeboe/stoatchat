@@ -51,7 +51,7 @@ fn track(id: &str, duration_ms: u64) -> v0::DjTrack {
 
 /// Write a placeholder audio file; the engine never decodes the bytes
 fn write_track_file(channel: &str, id: &str) {
-    paths::create_channel_dir(channel).expect("channel dir");
+    std::fs::create_dir_all(paths::channel_dir(channel)).expect("channel dir");
     std::fs::write(paths::track_path(channel, id), b"ID3 fake mp3 payload").expect("write track");
 }
 
@@ -223,7 +223,7 @@ async fn hostile_channel_ids_cannot_escape_the_dj_directory() {
     std::fs::create_dir_all(&sibling).expect("sibling dir");
     std::fs::write(sibling.join("keep.txt"), b"keep").expect("write");
 
-    paths::remove_channel_files("..");
+    paths::remove_channel_files("..").await;
     assert!(
         sibling.exists(),
         "a hostile channel id must not delete outside DJ_DIR"
@@ -242,7 +242,7 @@ async fn wipe_dir_clears_everything_and_recreates_the_root() {
     std::fs::create_dir_all(dir.join("chan-b")).expect("chan-b");
     std::fs::write(dir.join("chan-a").join("t1.mp3"), b"x").expect("file");
 
-    paths::wipe_dir();
+    paths::wipe_dir().await;
 
     assert!(dir.exists(), "the root directory must be recreated");
     assert_eq!(
@@ -565,6 +565,119 @@ async fn startup_wipe_clears_redis_state_and_files() {
         0,
         "every DJ file is wiped on start up"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn engine_respawns_over_a_dead_entry() {
+    let _guard = ENV_LOCK.lock().await;
+    if !redis().await {
+        return;
+    }
+
+    let dir = use_temp_dj_dir();
+    let channel = unique_channel();
+    let engine = DjEngine::new("https://api.example.com".to_string());
+
+    dj::add_member(&channel, "user-a").await.expect("join");
+    write_track_file(&channel, "t1");
+
+    engine.start(&channel, settings()).await;
+    assert!(engine.is_running(&channel));
+
+    // Simulate a task which died without its cleanup running (a panic)
+    engine.mark_finished(&channel);
+    assert!(!engine.is_running(&channel));
+
+    // Starting again must replace the dead entry instead of refusing to respawn
+    dj::push_track(&channel, &track("t1", 60_000))
+        .await
+        .expect("queue");
+    engine.start(&channel, settings()).await;
+    assert!(engine.is_running(&channel));
+
+    assert!(
+        wait_for(Duration::from_secs(5), || async {
+            dj::get_now(&channel)
+                .await
+                .map(|now| now.is_some())
+                .unwrap_or(false)
+        })
+        .await,
+        "the respawned task should pick the queued track up"
+    );
+
+    engine.stop(&channel);
+    clear_channel_state(&channel).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn stop_cancels_playback_and_releases_the_entry() {
+    let _guard = ENV_LOCK.lock().await;
+    if !redis().await {
+        return;
+    }
+
+    let dir = use_temp_dj_dir();
+    let channel = unique_channel();
+    let engine = DjEngine::new("https://api.example.com".to_string());
+
+    dj::add_member(&channel, "user-a").await.expect("join");
+    write_track_file(&channel, "t1");
+    dj::push_track(&channel, &track("t1", 60_000))
+        .await
+        .expect("queue");
+
+    engine.start(&channel, settings()).await;
+
+    assert!(
+        wait_for(Duration::from_secs(5), || async {
+            dj::get_now(&channel)
+                .await
+                .map(|now| now.is_some())
+                .unwrap_or(false)
+        })
+        .await,
+        "the track should start playing before it is stopped"
+    );
+
+    engine.stop(&channel);
+
+    assert!(
+        wait_for(Duration::from_secs(5), || async { !engine.is_running(&channel) }).await,
+        "stopping must release the channel entry once the task wakes up"
+    );
+
+    // Stopping is not the same as deleting: the queue is left for the caller
+    // (`clear_channel_state`) which owns the cleanup policy.
+    assert!(dj::get_now(&channel).await.unwrap().is_some());
+
+    clear_channel_state(&channel).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn clear_channel_state_stops_a_running_task() {
+    let _guard = ENV_LOCK.lock().await;
+    if !redis().await {
+        return;
+    }
+
+    let dir = use_temp_dj_dir();
+    let channel = unique_channel();
+    let engine = DjEngine::new("https://api.example.com".to_string());
+
+    dj::add_member(&channel, "user-a").await.expect("join");
+    write_track_file(&channel, "t1");
+    engine.start(&channel, settings()).await;
+
+    engine.stop(&channel);
+    clear_channel_state(&channel).await;
+
+    assert!(dj::get_members(&channel).await.unwrap().is_empty());
+    assert!(!paths::channel_dir(&channel).exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -175,3 +175,48 @@ fn settings_patches_deserialise_partially() {
     assert_eq!(patch.max_users, None);
     assert_eq!(patch.enabled, None);
 }
+
+#[test]
+fn removing_the_dj_field_turns_the_channel_back_into_a_text_channel() {
+    use crate::FieldsChannel;
+
+    let mut channel = text_channel(Some(DjInformation::default()));
+    assert!(channel.is_dj_channel());
+
+    channel.remove_field(&FieldsChannel::Dj);
+
+    assert!(channel.dj().is_none());
+    assert!(!channel.is_dj_channel());
+
+    // The wire variant of the same field maps to it, so `PATCH` with
+    // `remove: ["Dj"]` reaches the same code path
+    let wire: v0::FieldsChannel = serde_json::from_value(json!("Dj")).expect("variant");
+    assert_eq!(crate::FieldsChannel::from(wire), FieldsChannel::Dj);
+}
+
+#[test]
+fn partial_channel_carries_dj_through_the_bridge() {
+    // `dj` must survive both directions or settings would silently disappear
+    // on every round trip (and never appear in an audit log diff).
+    let settings = DjInformation {
+        skip_threshold: 0.75,
+        max_tracks: 5,
+        ..Default::default()
+    };
+
+    let wire = v0::PartialChannel {
+        dj: Some(settings.clone().into()),
+        ..Default::default()
+    };
+
+    let stored = crate::PartialChannel::from(wire.clone());
+    assert_eq!(stored.dj.as_ref(), Some(&settings));
+
+    let back = v0::PartialChannel::from(stored);
+    assert_eq!(back.dj.expect("dj survived").max_tracks, 5);
+
+    // And it serialises into the audit log diff the same way
+    let value = serde_json::to_value(&wire).expect("serialise");
+    assert_eq!(value["dj"]["skip_threshold"], json!(0.75));
+    assert!(value["name"].is_null());
+}

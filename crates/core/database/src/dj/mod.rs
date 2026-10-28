@@ -20,6 +20,7 @@ use redis_kiss::{get_connection as _get_connection, redis::AsyncCommands, Conn};
 use revolt_models::v0::{DjNowPlaying, DjTrack};
 use revolt_result::{create_error, Result, ToRevoltError};
 
+pub mod events;
 pub mod skip;
 pub use skip::*;
 
@@ -31,6 +32,55 @@ mod serde_tests;
 
 /// Prefix shared by every key owned by this module
 pub const KEY_PREFIX: &str = "dj_";
+
+/// Amount of keys requested per `SCAN` iteration
+///
+/// `SCAN` is used instead of `KEYS` everywhere so that a large DJ keyspace can
+/// never block the Redis server for the whole application.
+const SCAN_COUNT: usize = 512;
+
+/// Collect every key matching `pattern` using `SCAN`
+async fn scan_keys(pattern: &str) -> Result<Vec<String>> {
+    let mut conn = get_connection().await?;
+    let mut cursor: u64 = 0;
+    let mut keys = Vec::new();
+
+    loop {
+        let (next, batch): (u64, Vec<String>) = redis_kiss::redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(pattern)
+            .arg("COUNT")
+            .arg(SCAN_COUNT)
+            .query_async(&mut *conn)
+            .await
+            .to_internal_error()?;
+
+        keys.extend(batch);
+        cursor = next;
+
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    Ok(keys)
+}
+
+/// Read the id of the currently playing track inside a Lua script.
+///
+/// Compare-and-set helpers below read `dj_now` inside Lua, where the track id is
+/// extracted from the stored JSON. Track ids only ever contain URL-safe
+/// characters (see [`events`] and `crate::dj::KEY_PREFIX` users), so they are
+/// never escaped by serde_json and the pattern below is exact.
+///
+/// ```lua
+/// local current = redis.call('HGET', KEYS[1], 'track')
+/// if not current then return false, nil end
+/// ```
+///
+/// Recorded here so the duplicated snippet in each script stays identical.
+const _TRACK_ID_PATTERN_DOC: &str = r#""id":"([^"]+)""#;
 
 async fn get_connection() -> Result<Conn> {
     _get_connection()
@@ -147,6 +197,25 @@ pub async fn get_user_channels(user: &str) -> Result<Vec<String>> {
         .to_internal_error()
 }
 
+/// Every channel which currently has at least one member
+///
+/// Used by the reconciliation sweep, which has to start from the channels that
+/// exist rather than from the users Redis happens to know about.
+pub async fn member_channels() -> Result<Vec<String>> {
+    let prefix = members_key("");
+
+    let mut channels = scan_keys(&format!("{prefix}*"))
+        .await?
+        .into_iter()
+        .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
+        .collect::<Vec<_>>();
+
+    channels.sort();
+    channels.dedup();
+
+    Ok(channels)
+}
+
 /// Remove the user from every channel they joined
 ///
 /// Used when their websocket session closes.
@@ -259,6 +328,9 @@ pub async fn clear_now(channel: &str) -> Result<()> {
 }
 
 /// Record a vote to skip the given track, returning the amount of votes cast
+///
+/// This does **not** check that the track is still playing: routes must use
+/// [`cast_vote`] so a vote can never land on a track which has already ended.
 pub async fn add_vote(channel: &str, track: &str, user: &str) -> Result<u32> {
     let mut conn = get_connection().await?;
 
@@ -270,6 +342,52 @@ pub async fn add_vote(channel: &str, track: &str, user: &str) -> Result<u32> {
     conn.scard(votes_key(channel, track))
         .await
         .to_internal_error()
+}
+
+/// Outcome of a compare-and-set skip vote
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoteOutcome {
+    /// The vote was recorded, this is the total amount of votes now cast
+    Cast(u32),
+    /// Nothing is playing, so there is nothing to vote against
+    NoTrack,
+    /// The track changed between reading `dj_now` and casting the vote
+    TrackChanged,
+}
+
+/// Vote to skip `track`, but only while it is still the track in `dj_now`
+///
+/// Reading `dj_now` and recording the vote happen inside one Lua script, so a
+/// vote can neither land on a track which ended microseconds ago (which would
+/// leak a `dj_votes:*` key nobody ever clears) nor count towards the next one.
+pub async fn cast_vote(channel: &str, track: &str, user: &str) -> Result<VoteOutcome> {
+    // KEYS[1] = dj_now, KEYS[2] = dj_votes:{channel}:{track}
+    // ARGV[1] = expected track id, ARGV[2] = user id
+    const SCRIPT: &str = r#"
+local current = redis.call('HGET', KEYS[1], 'track')
+if not current then return -1 end
+local id = string.match(current, '"id":"([^"]+)"')
+if not id or id ~= ARGV[1] then return -2 end
+redis.call('SADD', KEYS[2], ARGV[2])
+return redis.call('SCARD', KEYS[2])
+"#;
+
+    let mut conn = get_connection().await?;
+
+    let result: i64 = redis_kiss::redis::Script::new(SCRIPT)
+        .key(now_key(channel))
+        .key(votes_key(channel, track))
+        .arg(track)
+        .arg(user)
+        .invoke_async(&mut *conn)
+        .await
+        .to_internal_error()?;
+
+    Ok(match result {
+        -1 => VoteOutcome::NoTrack,
+        -2 => VoteOutcome::TrackChanged,
+        votes => VoteOutcome::Cast(votes.max(0) as u32),
+    })
 }
 
 /// Fetch the users which voted to skip the given track
@@ -394,19 +512,51 @@ pub async fn clear_channel(channel: &str) -> Result<()> {
     Ok(())
 }
 
+/// Delete the channel's state only if it is still empty
+///
+/// The emptiness check and the deletion happen in one Lua script, so a member
+/// who joins while the engine is deciding to clear cannot end up in a channel
+/// whose queue, now and files were just wiped. Returns whether it cleared.
+pub async fn clear_channel_if_empty(channel: &str) -> Result<bool> {
+    // KEYS = members, queue, now, seq, empty_since
+    // ARGV[1] = `dj_votes:{channel}` prefix used to clean up the votes key
+    const SCRIPT: &str = r#"
+if redis.call('SCARD', KEYS[1]) > 0 then return 0 end
+
+local current = redis.call('HGET', KEYS[3], 'track')
+if current then
+    local id = string.match(current, '"id":"([^"]+)"')
+    if id then redis.call('DEL', ARGV[1] .. ':' .. id) end
+end
+
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5])
+return 1
+"#;
+
+    let mut conn = get_connection().await?;
+
+    let cleared: i64 = redis_kiss::redis::Script::new(SCRIPT)
+        .key(members_key(channel))
+        .key(queue_key(channel))
+        .key(now_key(channel))
+        .key(seq_key(channel))
+        .key(empty_since_key(channel))
+        .arg(format!("dj_votes:{channel}"))
+        .invoke_async(&mut *conn)
+        .await
+        .to_internal_error()?;
+
+    Ok(cleared == 1)
+}
+
 /// Delete every `dj_*` key in the database
 ///
 /// Called on process start: DJ queues are intentionally not durable.
 pub async fn clear_all() -> Result<()> {
     let mut conn = get_connection().await?;
 
-    let keys: Vec<String> = conn
-        .keys(format!("{KEY_PREFIX}*"))
-        .await
-        .to_internal_error()?;
-
-    if !keys.is_empty() {
-        let _: u32 = conn.del(keys).await.to_internal_error()?;
+    for key in scan_keys(&format!("{KEY_PREFIX}*")).await? {
+        let _: u32 = conn.del(&key).await.to_internal_error()?;
     }
 
     Ok(())

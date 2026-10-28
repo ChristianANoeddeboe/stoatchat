@@ -9,6 +9,7 @@ use revolt_permissions::{calculate_channel_permissions, ChannelPermission};
 use revolt_result::Result;
 use rocket::{serde::json::Json, State};
 
+use super::check_join_permissions;
 use crate::dj::{publish_to_members, resolve_dj_channel, DjEngine};
 
 /// # Join DJ Channel
@@ -30,7 +31,7 @@ pub async fn join(
 
     let mut query = perms(db, &user).channel(&channel);
     let permissions = calculate_channel_permissions(&mut query).await;
-    permissions.throw_if_lacking_channel_permission(ChannelPermission::Connect)?;
+    check_join_permissions(&permissions)?;
 
     let members = dj::get_members(channel.id()).await?;
 

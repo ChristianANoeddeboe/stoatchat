@@ -35,6 +35,13 @@ impl<'a> RatelimitResolver<Request<'a>> for DeltaRatelimits {
                 }
                 ("bots", _, _) => ("bots", None),
                 ("channels", Some(id), _) => {
+                    // DJ joins, uploads and votes get their own bucket: an
+                    // upload is far more expensive than a channel fetch and
+                    // must not eat the generic channel budget.
+                    if resource == Some("dj") {
+                        return ("dj", Some(id));
+                    }
+
                     if request.method() == Method::Post {
                         if let Some("messages") = extra {
                             return ("messaging", Some(id));
@@ -67,6 +74,7 @@ impl<'a> RatelimitResolver<Request<'a>> for DeltaRatelimits {
             "users" => 20,
             "bots" => 10,
             "messaging" => 10,
+            "dj" => 20,
             "channels" => 15,
             "servers" => 5,
             "auth" => 15,

@@ -21,6 +21,7 @@ use crate::util::audit_log_reason::AuditLogReason;
 #[delete("/<target>?<options..>")]
 pub async fn delete(
     db: &State<Database>,
+    engine: &State<crate::dj::DjEngine>,
     voice_client: &State<VoiceClient>,
     amqp: &State<AMQP>,
     user: User,
@@ -106,7 +107,9 @@ pub async fn delete(
 
             delete_voice_channel(voice_client, &UserVoiceChannel::from_channel(&channel)).await?;
 
-            // DJ audio and playback state live outside the database
+            // DJ audio and playback state live outside the database: stop the
+            // playback task before dropping the state it is writing to.
+            engine.stop(channel.id());
             crate::dj::clear_channel_state(channel.id()).await;
         }
     };

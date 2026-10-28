@@ -40,33 +40,59 @@ fn ffprobe_bin() -> String {
     std::env::var(FFPROBE_ENV).unwrap_or_else(|_| "ffprobe".to_string())
 }
 
-/// Check that ffmpeg is available, logging loudly if it is not
-///
-/// This is called on start up. A missing binary is not fatal (deployments which
-/// do not use DJ channels should still boot) but every upload will fail.
-pub async fn check_available() -> bool {
-    let output = Command::new(ffmpeg_bin())
+/// Whether the given binary answers `-version` successfully
+async fn binary_available(binary: &str) -> Option<String> {
+    let output = Command::new(binary)
         .arg("-version")
         .stdin(Stdio::null())
         .output()
-        .await;
+        .await
+        .ok()?;
 
-    match output {
-        Ok(output) if output.status.success() => {
-            let version = String::from_utf8_lossy(&output.stdout);
-            let version = version.lines().next().unwrap_or("unknown version");
+    if !output.status.success() {
+        return None;
+    }
 
-            log::info!("DJ transcoding available: {version}");
+    let version = String::from_utf8_lossy(&output.stdout);
+    Some(version.lines().next().unwrap_or("unknown version").to_string())
+}
+
+/// Check that ffmpeg **and** ffprobe are available, logging loudly if not
+///
+/// Both are required: ffmpeg transcodes and ffprobe supplies the authoritative
+/// duration, so an instance with only ffmpeg would accept uploads and then fail
+/// every one of them. A missing binary is not fatal (deployments which do not
+/// use DJ channels should still boot) but every upload will fail.
+pub async fn check_available() -> bool {
+    let ffmpeg = binary_available(&ffmpeg_bin()).await;
+    let ffprobe = binary_available(&ffprobe_bin()).await;
+
+    match (ffmpeg, ffprobe) {
+        (Some(ffmpeg), Some(ffprobe)) => {
+            log::info!("DJ transcoding available: {ffmpeg} / {ffprobe}");
             true
         }
-        _ => {
-            log::error!(
-                "############################################################\n\
-                 # ffmpeg is NOT available on this instance!                #\n\
-                 # DJ channel uploads will fail with DjUnavailable.         #\n\
-                 # Install ffmpeg in the delta image (see Dockerfile).      #\n\
-                 ############################################################"
-            );
+        (ffmpeg, ffprobe) => {
+            if ffmpeg.is_none() {
+                log::error!(
+                    "############################################################\n\
+                     # ffmpeg is NOT available on this instance!                #\n\
+                     # DJ channel uploads will fail with DjUnavailable.         #\n\
+                     # Install ffmpeg in the delta image (see Dockerfile).      #\n\
+                     ############################################################"
+                );
+            }
+
+            if ffprobe.is_none() {
+                log::error!(
+                    "############################################################\n\
+                     # ffprobe is NOT available on this instance!               #\n\
+                     # DJ uploads cannot be measured and will fail.             #\n\
+                     # Install ffmpeg (it ships ffprobe) in the delta image.    #\n\
+                     ############################################################"
+                );
+            }
+
             false
         }
     }
@@ -388,6 +414,15 @@ mod tests {
         assert!(probe_duration_ms(&source).await.is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_missing_binary_is_reported_as_unavailable() {
+        // `check_available` must look at ffprobe too: an instance with only
+        // ffmpeg accepts uploads and then fails every single one.
+        assert!(binary_available("dj-test-definitely-not-a-binary")
+            .await
+            .is_none());
     }
 
     #[tokio::test]
