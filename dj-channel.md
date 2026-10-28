@@ -321,7 +321,7 @@ GET    /dj/{channel}/stream?token=...    -> 206 range-capable audio
 - Requeue after play (upload again).
 - Playlists, history, replay, federation, DRM.
 
-## 13. Open decisions
-1. Confirm single-instance delta is the deployment target (the in-process engine
-   requires it).
-2. Nothing else outstanding.
+## 13. Decisions
+1. **Single-instance delta confirmed.** The in-process engine requires one
+   instance serving DJ channels.
+2. Nothing else outstanding. Spec is ready to implement.
