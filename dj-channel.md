@@ -17,7 +17,7 @@ fixed here.
 | Area | v1 | v2 |
 |---|---|---|
 | Channel model | new `DJ` channel_type variant | `TextChannel` + `dj: Option<DjInformation>` capability field (voice precedent) |
-| Membership | "joined members", no mechanism | explicit lease set, 30 s heartbeat / 90 s expiry |
+| Membership | "joined members", no mechanism | voice-style join/leave + TTL heartbeat (30 s / 90 s) |
 | Streaming | reuse file layer, range requests | dedicated unencrypted range-capable DJ blobs + 206 handler + signed URL |
 | Queue owner | a worker, undefined store | Mongo `dj_queue` (durable) + single-replica worker with Redis lease + `play_seq` |
 | Delete on play | synchronous delete | mark played, `delete_after = now + 60 s`, reference-counted reaper |
@@ -25,7 +25,7 @@ fixed here.
 | Requeue after play | allowed | not allowed in v1; re-upload to replay |
 | Skip math | `votes >= ceil(members × threshold)` | `max(1, ceil(present_voters × threshold))` + threshold-0 = 1 vote |
 | Settings | flat channel fields | dedicated `PATCH /dj/settings`, `ManageChannel` gated |
-| Android background audio | assumed free | explicit `media3-session` + `mediaPlayback` foreground service work |
+| Android background audio | assumed free | **foreground-only in v1**; no session service |
 | Storage location | "locally on the server" | MinIO/S3 via autumn (unencrypted DJ bucket) |
 
 **Decision that moved: crash recovery.** v1 said "clear everything on restart."
@@ -33,6 +33,10 @@ That was compensating for an ephemeral queue. With a durable Mongo queue it is
 unnecessary and destroys user uploads on any worker restart. v2 resumes instead.
 If you still want crash-wipe, say so and it goes back in, but it is now a single
 line, not the load-bearing recovery design.
+
+**Channel model re-confirmed:** DJ stays a `TextChannel` with a `dj` option, not
+a new `channel_type`. Joining is a voice-style explicit action (see §2). This
+keeps shipped Android clients working (no enum parse throw).
 
 ---
 
@@ -57,7 +61,8 @@ struct DjInformation {
     max_track_seconds: u32,     // default 900 (15 min)
     max_tracks: u32,            // total queue depth, default 100
     max_total_bytes: u64,       // per-channel storage ceiling, default 20 GiB
-    enabled: bool,              // per-server kill switch (admin)
+    max_users: Option<u32>,     // optional join cap, like voice_info.max_users
+    enabled: bool,              // channel on/off (server admins can also disable)
 }
 ```
 
@@ -92,22 +97,33 @@ forum posts cannot be created in a DJ channel. Acks/unreads remain allowed.
 
 ---
 
-## 2. Membership ("joined")
+## 2. Membership ("joined", voice-style)
 
-Server channels have no join concept. v2 adds an explicit lease, modelled on
-voice but with the expiry voice lacks.
+DJ is a **TextChannel with a `dj` option** (`channel_type` stays `TextChannel`),
+but it is *joined* the way a voice channel is: the sidebar shows a joinable
+channel, joining is an explicit action, and the joined set is visible.
 
-- Redis set `dj_members:{channel_id}`.
-- `POST /channels/{id}/dj/join` adds the user and returns the full state.
-- `POST /channels/{id}/dj/leave` removes the user.
-- Client heartbeats every **30 s** (`POST /channels/{id}/dj/heartbeat`, or
-  piggyback on the existing websocket ping); entries expire after **90 s**.
-- A backgrounded tab that stops heartbeating expires, which is the intended
-  definition of "joined" (explicit and expiring, not "channel is visible").
+- `POST /channels/{id}/dj/join` mirrors `join_call` semantics: requires the
+  `Connect` channel permission, enforces `dj.max_users` if set, adds the user to
+  the live set, and returns the full DJ state.
+- `POST /channels/{id}/dj/leave` removes the user and stops playback for them.
+- Membership lives in Redis `dj_members:{channel_id}`, **with a TTL**. Voice's
+  `vc_members` set has no expiry and goes stale; do not copy that bug.
+- Client heartbeats every **30 s** (piggyback on the existing websocket ping or
+  `POST .../dj/heartbeat`); entries expire after **90 s**.
+- A backgrounded tab that stops heartbeating expires. "Joined" is explicit and
+  expiring, never "channel is visible".
+- `dj_states: Option<Vec<DjChannelState>>` in the `Ready` payload (mirrors
+  `voice_states`), so reconnects know which DJ channels the user is in.
 - Count = cardinality of the live set. Never derive it from `ViewChannel` or
   open tabs.
 
 Events: `DJ.MemberJoined {user, count}`, `DJ.MemberLeft {user, count}`.
+
+**Sidebar/UX:** a TextChannel with `dj != null` renders as a joinable DJ channel
+(headphones badge, member count), not a normal text channel. Opening it without
+joining shows the queue read-only with a Join button; joining unlocks
+upload/skip.
 
 ---
 
@@ -334,14 +350,13 @@ require `ManageChannel`; server admins can set `enabled = false`.
 - Queue UI replaces the composer.
 
 ### Android
-- androidx.media3 ExoPlayer 1.9.2 is already the media engine, but **background
-  playback is not wired**: no `media3-session`, no `mediaPlayback` foreground
-  service, and `AudioPlayer.kt` releases on dispose.
-- Add `media3-session` + a `MediaSessionService` with
-  `foregroundServiceType="mediaPlayback"` for the DJ player.
-- Channel-scoped continuous player: advances on `DJ.TrackStarted`, seeks on
-  mid-song join (`prepare()` then `seekTo(position_ms)` from `server_time` +
-  RTT).
+- androidx.media3 ExoPlayer 1.9.2 is already the media engine.
+- **V1 is foreground-only.** No `media3-session`, no `MediaSessionService`, no
+  `mediaPlayback` foreground service. Playback runs while the DJ channel screen
+  is in the foreground; backgrounding the app stops/pauses audio (the OS may
+  kill the process). Background playback is explicitly out of scope for v1.
+- Channel-scoped player: advances on `DJ.TrackStarted`, seeks on mid-song join
+  (`prepare()` then `seekTo(position_ms)` from `server_time` + RTT).
 - Handle: leaving the channel (stop), two DJ channels at once (one active), audio
   focus/ducking, and upload-picker constraints.
 
@@ -367,16 +382,16 @@ require `ManageChannel`; server admins can set `enabled = false`.
 ## 11. Rollout
 
 1. Backend models + capability field + posting guards.
-2. Membership lease + state snapshot + events.
+2. Voice-style membership join/leave + TTL heartbeat + `dj_states` in Ready + events.
 3. Storage: unencrypted DJ blob path + range handler + signed URL.
 4. Transcode worker + queue store + playback engine.
 5. SDK.
 6. Web player (autoplay unlock) + queue UI.
-7. Android session service + channel player.
+7. Android foreground channel player (no session service).
 8. Desktop config flag.
 
-Android can ship before a backend `DJ` variant would have broken it, because the
-capability field leaves `channel_type` unchanged.
+No `channel_type` enum value is added, so shipped Android clients keep parsing
+`Ready` normally; DJ is detected via `dj != null`.
 
 ---
 
@@ -389,5 +404,4 @@ capability field leaves `channel_type` unchanged.
 
 ## 13. Open decisions
 1. Confirm crash recovery = resume (v1 said wipe). Default: resume.
-2. Background playback on Android in v1 (adds media3-session + foreground
-   service), or foreground-only first? Default: include it, full feature.
+2. ~~Android background playback~~ **Resolved: foreground-only in v1.**
