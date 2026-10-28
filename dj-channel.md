@@ -256,7 +256,8 @@ GET    /dj/{channel}/stream?token=...    -> 206 range-capable audio
 ### Streaming
 
 - Files are served from local disk with Rocket `NamedFile`, which handles
-  `Range`/`206`/`Accept-Ranges` natively.
+  `Range`/`206`/`Accept-Ranges` natively (Rocket 0.5; enable its `fs` feature
+  if not already on).
 - Signed query token: HMAC over `(channel, track_id, expiry)`;
   TTL = `max_track_seconds + 60 s`.
 - The token is required because `<audio>` cannot send an `Authorization` header.
