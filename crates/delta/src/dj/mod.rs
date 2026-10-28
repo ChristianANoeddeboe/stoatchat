@@ -16,6 +16,10 @@ pub mod transcode;
 #[cfg(test)]
 mod engine_tests;
 
+/// Serialises tests which change process-wide DJ configuration (`DJ_DIR`)
+#[cfg(test)]
+pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 use std::sync::Arc;
 use std::time::Duration;
 

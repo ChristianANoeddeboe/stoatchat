@@ -22,8 +22,7 @@ use revolt_result::ErrorType;
 
 use crate::dj::{clear_channel_state, paths, resolve_dj_channel, DjEngine};
 
-/// Serialises everything which mutates the process-wide `DJ_DIR`
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+use crate::dj::ENV_LOCK;
 
 fn unique_channel() -> String {
     format!("test-{}", ulid::Ulid::new())
@@ -196,7 +195,7 @@ fn safe_ids_are_bounded_and_restricted_to_a_single_path_component() {
 
 #[tokio::test]
 async fn hostile_channel_ids_cannot_escape_the_dj_directory() {
-    let _guard = SERIAL.lock().await;
+    let _guard = ENV_LOCK.lock().await;
     let dir = use_temp_dj_dir();
 
     for channel in ["../..", "..", "a/../../etc", ""] {
@@ -236,7 +235,7 @@ async fn hostile_channel_ids_cannot_escape_the_dj_directory() {
 
 #[tokio::test]
 async fn wipe_dir_clears_everything_and_recreates_the_root() {
-    let _guard = SERIAL.lock().await;
+    let _guard = ENV_LOCK.lock().await;
     let dir = use_temp_dj_dir();
 
     std::fs::create_dir_all(dir.join("chan-a")).expect("chan-a");
@@ -257,7 +256,7 @@ async fn wipe_dir_clears_everything_and_recreates_the_root() {
 
 #[tokio::test]
 async fn engine_starts_a_queued_track_and_clears_it_when_it_ends() {
-    let _guard = SERIAL.lock().await;
+    let _guard = ENV_LOCK.lock().await;
     if !redis().await {
         return;
     }
@@ -342,7 +341,7 @@ async fn engine_starts_a_queued_track_and_clears_it_when_it_ends() {
 
 #[tokio::test]
 async fn empty_channel_is_cleared_after_the_grace_period() {
-    let _guard = SERIAL.lock().await;
+    let _guard = ENV_LOCK.lock().await;
     if !redis().await {
         return;
     }
@@ -399,7 +398,7 @@ async fn empty_channel_is_cleared_after_the_grace_period() {
 
 #[tokio::test]
 async fn rejoining_inside_the_grace_period_keeps_the_queue() {
-    let _guard = SERIAL.lock().await;
+    let _guard = ENV_LOCK.lock().await;
     if !redis().await {
         return;
     }
@@ -448,7 +447,7 @@ async fn rejoining_inside_the_grace_period_keeps_the_queue() {
 
 #[tokio::test]
 async fn clear_channel_state_deletes_files_immediately() {
-    let _guard = SERIAL.lock().await;
+    let _guard = ENV_LOCK.lock().await;
     if !redis().await {
         return;
     }
@@ -483,7 +482,7 @@ async fn clear_channel_state_deletes_files_immediately() {
 
 #[tokio::test]
 async fn orphan_sweep_removes_only_old_unreferenced_files() {
-    let _guard = SERIAL.lock().await;
+    let _guard = ENV_LOCK.lock().await;
     if !redis().await {
         return;
     }
@@ -529,7 +528,7 @@ async fn orphan_sweep_removes_only_old_unreferenced_files() {
 
 #[tokio::test]
 async fn startup_wipe_clears_redis_state_and_files() {
-    let _guard = SERIAL.lock().await;
+    let _guard = ENV_LOCK.lock().await;
     if !redis().await {
         return;
     }
