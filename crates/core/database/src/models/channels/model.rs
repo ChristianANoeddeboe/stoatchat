@@ -114,6 +114,10 @@ auto_derived!(
             #[serde(skip_serializing_if = "Option::is_none")]
             voice: Option<VoiceInformation>,
 
+            /// DJ Information for when this channel is also a DJ channel
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            dj: Option<DjInformation>,
+
             /// The channel's slowmode delay in seconds
             #[serde(skip_serializing_if = "Option::is_none")]
             slowmode: Option<u64>,
@@ -248,6 +252,82 @@ auto_derived!(
     }
 );
 
+/// DJ information for a channel
+///
+/// Declared outside of `auto_derived!` because `skip_threshold` is an `f32`,
+/// which is not `Eq`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct DjInformation {
+    /// Fraction of present members required to skip the current track (0.0 - 1.0)
+    #[serde(default = "default_dj_skip_threshold")]
+    pub skip_threshold: f32,
+    /// Maximum size of a single upload, in megabytes
+    #[serde(default = "default_dj_max_file_mb")]
+    pub max_file_mb: u32,
+    /// Maximum duration of a single track, in seconds
+    #[serde(default = "default_dj_max_track_seconds")]
+    pub max_track_seconds: u32,
+    /// Maximum amount of tracks queued at once
+    #[serde(default = "default_dj_max_tracks")]
+    pub max_tracks: u32,
+    /// Maximum total amount of bytes stored for this channel
+    #[serde(default = "default_dj_max_total_bytes")]
+    pub max_total_bytes: u64,
+    /// Maximum amount of users which may join at once
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_users: Option<u32>,
+    /// Whether the DJ is currently enabled
+    #[serde(default = "default_dj_enabled")]
+    pub enabled: bool,
+}
+
+/// Whether the DJ is enabled by default
+fn default_dj_enabled() -> bool {
+    true
+}
+
+/// Default skip threshold, mirrors `revolt_models::v0::DJ_DEFAULT_SKIP_THRESHOLD`
+fn default_dj_skip_threshold() -> f32 {
+    v0::DJ_DEFAULT_SKIP_THRESHOLD
+}
+
+/// Default maximum upload size, mirrors `revolt_models::v0::DJ_DEFAULT_MAX_FILE_MB`
+fn default_dj_max_file_mb() -> u32 {
+    v0::DJ_DEFAULT_MAX_FILE_MB
+}
+
+/// Default maximum track duration, mirrors `revolt_models::v0::DJ_DEFAULT_MAX_TRACK_SECONDS`
+fn default_dj_max_track_seconds() -> u32 {
+    v0::DJ_DEFAULT_MAX_TRACK_SECONDS
+}
+
+/// Default maximum queue depth, mirrors `revolt_models::v0::DJ_DEFAULT_MAX_TRACKS`
+fn default_dj_max_tracks() -> u32 {
+    v0::DJ_DEFAULT_MAX_TRACKS
+}
+
+/// Default maximum channel size, mirrors `revolt_models::v0::DJ_DEFAULT_MAX_TOTAL_BYTES`
+fn default_dj_max_total_bytes() -> u64 {
+    v0::DJ_DEFAULT_MAX_TOTAL_BYTES
+}
+
+impl Default for DjInformation {
+    fn default() -> Self {
+        Self {
+            skip_threshold: default_dj_skip_threshold(),
+            max_file_mb: default_dj_max_file_mb(),
+            max_track_seconds: default_dj_max_track_seconds(),
+            max_tracks: default_dj_max_tracks(),
+            max_total_bytes: default_dj_max_total_bytes(),
+            max_users: None,
+            enabled: true,
+        }
+    }
+}
+
+// `f32` is not `Eq`, but the type is only ever compared with `PartialEq`.
+impl Eq for DjInformation {}
+
 auto_derived!(
     #[derive(Default)]
     pub struct PartialChannel {
@@ -273,6 +353,8 @@ auto_derived!(
         pub last_message_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub voice: Option<VoiceInformation>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub dj: Option<DjInformation>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub slowmode: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -379,6 +461,7 @@ impl Channel {
                 role_permissions: HashMap::new(),
                 nsfw: data.nsfw.unwrap_or(false),
                 voice: data.voice.map(|voice| voice.into()),
+                dj: None,
                 slowmode: None,
                 default_auto_archive_minutes: None,
             },
@@ -393,6 +476,7 @@ impl Channel {
                 role_permissions: HashMap::new(),
                 nsfw: data.nsfw.unwrap_or(false),
                 voice: Some(data.voice.unwrap_or_default().into()),
+                dj: None,
                 slowmode: None,
                 default_auto_archive_minutes: None,
             },
@@ -841,6 +925,19 @@ impl Channel {
         }
     }
 
+    /// Gets this channel's DJ information, if it is a DJ channel
+    pub fn dj(&self) -> Option<Cow<DjInformation>> {
+        match self {
+            Self::TextChannel { dj: Some(dj), .. } => Some(Cow::Borrowed(dj)),
+            _ => None,
+        }
+    }
+
+    /// Whether this channel is a DJ channel which is currently enabled
+    pub fn is_dj_channel(&self) -> bool {
+        self.dj().is_some_and(|dj| dj.enabled)
+    }
+
     /// Set role permission on a channel
     pub async fn set_role_permission(
         &mut self,
@@ -1052,6 +1149,7 @@ impl Channel {
                 default_permissions,
                 role_permissions,
                 voice,
+                dj,
                 slowmode,
                 default_auto_archive_minutes,
                 ..
@@ -1090,6 +1188,10 @@ impl Channel {
 
                 if let Some(v) = partial.voice {
                     voice.replace(v);
+                }
+
+                if let Some(v) = partial.dj {
+                    dj.replace(v);
                 }
             }
             Self::ForumChannel {
@@ -1311,6 +1413,7 @@ impl Channel {
                 role_permissions,
                 nsfw,
                 voice,
+                dj,
                 slowmode,
                 default_auto_archive_minutes,
                 ..
@@ -1347,6 +1450,10 @@ impl Channel {
 
                 if partial.voice.is_some() || remove.contains(&FieldsChannel::Voice) {
                     before.voice = voice.clone();
+                };
+
+                if partial.dj.is_some() {
+                    before.dj = dj.clone();
                 };
 
                 if partial.slowmode.is_some() || remove.contains(&FieldsChannel::Slowmode) {

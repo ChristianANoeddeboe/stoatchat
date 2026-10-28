@@ -244,6 +244,36 @@ impl State {
             None
         };
 
+        // DJ channels this user has joined, so a reconnect knows which players
+        // to restore
+        let dj_states = if fields.dj_states {
+            let mut dj_states = Vec::new();
+
+            for channel_id in revolt_database::dj::get_user_channels(&user.id)
+                .await
+                .unwrap_or_default()
+            {
+                if !channels.iter().any(|channel| channel.id() == channel_id) {
+                    continue;
+                }
+
+                let members = revolt_database::dj::get_members(&channel_id)
+                    .await
+                    .unwrap_or_default();
+
+                user_ids.extend(members.iter().cloned());
+
+                dj_states.push(v0::DjChannelMembers {
+                    id: channel_id,
+                    members,
+                });
+            }
+
+            Some(dj_states)
+        } else {
+            None
+        };
+
         // Fetch presence data for known users.
         let online_ids = filter_online(&user_ids.iter().cloned().collect::<Vec<String>>()).await;
 
@@ -363,6 +393,7 @@ impl State {
                 None
             },
             voice_states,
+            dj_states,
             thread_members: if fields.channels {
                 Some(thread_members)
             } else {

@@ -39,6 +39,9 @@ pub async fn message_send(
     // Ensure we have permissions to send a message
     let mut channel = target.as_channel(db).await?;
 
+    // DJ channels are read-only for messages
+    super::resolve_postable_channel(&channel)?;
+
     // Messages in forums are sent as posts
     if let Channel::ForumChannel { .. } = channel {
         return Err(create_error!(InvalidOperation));

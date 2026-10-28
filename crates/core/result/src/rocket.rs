@@ -90,6 +90,20 @@ impl<'r> Responder<'r, 'static> for Error {
             ErrorType::AlreadyConnected => Status::BadRequest,
             ErrorType::NotConnected => Status::BadRequest,
             ErrorType::UnknownNode => Status::BadRequest,
+
+            ErrorType::NotADjChannel => Status::BadRequest,
+            ErrorType::DjDisabled => Status::BadRequest,
+            ErrorType::NotInDjChannel => Status::Forbidden,
+            ErrorType::CannotJoinDjChannel => Status::BadRequest,
+            ErrorType::CannotSendMessageToDjChannel => Status::BadRequest,
+            ErrorType::DjQueueFull { .. } => Status::BadRequest,
+            ErrorType::DjStorageFull { .. } => Status::BadRequest,
+            ErrorType::DjUploadLimit { .. } => Status::BadRequest,
+            ErrorType::DjTrackTooLong { .. } => Status::BadRequest,
+            ErrorType::DjUnavailable => Status::ServiceUnavailable,
+            ErrorType::DjTranscodeFailed => Status::UnprocessableEntity,
+            ErrorType::InvalidDjToken => Status::Forbidden,
+
             ErrorType::FeatureDisabled { .. } => Status::BadRequest,
             ErrorType::HeaderTooLarge => Status::BadRequest,
 

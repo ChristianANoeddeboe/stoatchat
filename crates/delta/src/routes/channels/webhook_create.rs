@@ -38,6 +38,8 @@ pub async fn create_webhook(
         return Err(create_error!(InvalidOperation));
     }
 
+    super::resolve_postable_channel(&channel)?;
+
     let mut query = DatabasePermissionQuery::new(db, &user).channel(&channel);
     calculate_channel_permissions(&mut query)
         .await

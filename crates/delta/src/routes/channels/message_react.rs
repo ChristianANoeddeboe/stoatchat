@@ -20,6 +20,8 @@ pub async fn react_message(
     emoji: Reference<'_>,
 ) -> Result<EmptyResponse> {
     let channel = target.as_channel(db).await?;
+    super::resolve_postable_channel(&channel)?;
+
     let mut query = DatabasePermissionQuery::new(db, &user).channel(&channel);
     calculate_channel_permissions(&mut query)
         .await

@@ -3,12 +3,12 @@ use revolt_result::Error;
 use serde::{Deserialize, Serialize};
 
 use revolt_models::v0::{
-    AppendMessage, Channel, ChannelSlowmode, ChannelUnread, ChannelVoiceState, Emoji,
-    FieldsChannel, FieldsMember, FieldsMessage, FieldsRole, FieldsServer, FieldsUser,
-    FieldsWebhook, Member, MemberCompositeKey, Message, PartialChannel, PartialEmoji,
-    PartialMember, PartialMessage, PartialRole, PartialServer, PartialUser, PartialUserVoiceState,
-    PartialWebhook, PolicyChange, RemovalIntention, Report, Server, ThreadMember, User,
-    UserSettings, UserVoiceState, Webhook,
+    AppendMessage, Channel, ChannelSlowmode, ChannelUnread, ChannelVoiceState, DjChannelMembers,
+    DjInformation, DjTrack, Emoji, FieldsChannel, FieldsMember, FieldsMessage, FieldsRole,
+    FieldsServer, FieldsUser, FieldsWebhook, Member, MemberCompositeKey, Message, PartialChannel,
+    PartialEmoji, PartialMember, PartialMessage, PartialRole, PartialServer, PartialUser,
+    PartialUserVoiceState, PartialWebhook, PolicyChange, RemovalIntention, Report, Server,
+    ThreadMember, User, UserSettings, UserVoiceState, Webhook,
 };
 
 use crate::{Account, Database, Session};
@@ -30,6 +30,7 @@ pub struct ReadyPayloadFields {
     pub members: bool,
     pub emojis: bool,
     pub voice_states: bool,
+    pub dj_states: bool,
     pub user_settings: Vec<String>,
     pub channel_unreads: bool,
     pub policy_changes: bool,
@@ -44,6 +45,7 @@ impl Default for ReadyPayloadFields {
             members: true,
             emojis: true,
             voice_states: true,
+            dj_states: true,
             user_settings: Vec::new(),
             channel_unreads: false,
             policy_changes: true,
@@ -82,6 +84,9 @@ pub enum EventV1 {
         emojis: Option<Vec<Emoji>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         voice_states: Option<Vec<ChannelVoiceState>>,
+        /// DJ channels this user has joined
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dj_states: Option<Vec<DjChannelMembers>>,
         /// Our memberships of the threads in `channels`
         #[serde(skip_serializing_if = "Option::is_none")]
         thread_members: Option<Vec<ThreadMember>>,
@@ -403,6 +408,76 @@ pub enum EventV1 {
         channel_id: String,
         started_at: Option<Timestamp>,
         ended: bool,
+    },
+
+    /// User joined a DJ channel
+    DjMemberJoined {
+        channel: String,
+        user: String,
+        count: u32,
+    },
+    /// User left a DJ channel
+    DjMemberLeft {
+        channel: String,
+        user: String,
+        count: u32,
+    },
+    /// Track was added to the DJ queue
+    DjTrackQueued {
+        channel: String,
+        track: DjTrack,
+        position: u32,
+    },
+    /// Track started playing in a DJ channel
+    DjTrackStarted {
+        channel: String,
+        track: DjTrack,
+        position_ms: u64,
+        /// Server time at which this event was emitted (unix milliseconds)
+        server_time: u64,
+        /// Signed, short-lived URL to stream the track from
+        signed_url: String,
+    },
+    /// Playback heartbeat for the current DJ track
+    DjNowPlaying {
+        channel: String,
+        track: DjTrack,
+        position_ms: u64,
+        /// Server time at which this event was emitted (unix milliseconds)
+        server_time: u64,
+        /// Signed, short-lived URL to stream the track from
+        signed_url: String,
+    },
+    /// Vote to skip the current DJ track was cast
+    DjVote {
+        channel: String,
+        votes: u32,
+        needed: u32,
+        voters: Vec<String>,
+    },
+    /// Current DJ track was skipped
+    DjSkipped {
+        channel: String,
+        track: DjTrack,
+    },
+    /// Current DJ track ended
+    DjTrackEnded {
+        channel: String,
+        track: DjTrack,
+    },
+    /// The DJ queue of a channel was cleared
+    DjQueueCleared {
+        channel: String,
+    },
+    /// A DJ upload failed to be processed
+    DjUploadFailed {
+        channel: String,
+        reason: String,
+    },
+    /// The settings of a DJ channel were updated
+    DjSettingsUpdate {
+        channel: String,
+        settings: DjInformation,
     },
 }
 

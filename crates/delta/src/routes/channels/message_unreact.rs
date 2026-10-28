@@ -24,6 +24,8 @@ pub async fn unreact_message(
     options: v0::OptionsUnreact,
 ) -> Result<EmptyResponse> {
     let channel = target.as_channel(db).await?;
+    super::resolve_postable_channel(&channel)?;
+
     let mut query = DatabasePermissionQuery::new(db, &user).channel(&channel);
     let permissions = calculate_channel_permissions(&mut query).await;
 

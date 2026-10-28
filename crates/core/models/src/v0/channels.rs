@@ -114,6 +114,13 @@ auto_derived!(
             #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
             voice: Option<VoiceInformation>,
 
+            /// DJ Information for when this channel is also a DJ channel
+            #[cfg_attr(
+                feature = "serde",
+                serde(default, skip_serializing_if = "Option::is_none")
+            )]
+            dj: Option<DjInformation>,
+
             /// The channel's slowmode delay in seconds
             #[serde(skip_serializing_if = "Option::is_none")]
             slowmode: Option<u64>,
@@ -325,6 +332,74 @@ auto_derived!(
         #[cfg_attr(feature = "validator", validate(range(min = 1)))]
         #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
         pub max_users: Option<usize>,
+    }
+
+    /// A track in the DJ queue
+    #[derive(Default)]
+    pub struct DjTrack {
+        /// Unique id of this track (`<seq>-<ulid>`)
+        pub id: String,
+        /// Path of the (unencrypted) audio file, served from `/dj/<channel>/stream`
+        pub file: String,
+        /// Display title of the track
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub title: String,
+        /// Duration of the track in milliseconds
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub duration_ms: u64,
+        /// Id of the user who uploaded the track
+        pub uploader: String,
+    }
+
+    /// The track currently playing in a DJ channel
+    #[derive(Default)]
+    pub struct DjNowPlaying {
+        /// Track which is currently playing
+        pub track: DjTrack,
+        /// Unix timestamp (in milliseconds) at which the track started
+        pub started_at: u64,
+    }
+
+    /// State of a DJ channel
+    #[derive(Default)]
+    pub struct DjChannelState {
+        /// Id of the channel this state belongs to
+        #[cfg_attr(feature = "serde", serde(rename = "_id"))]
+        pub id: String,
+        /// Track which is currently playing, if any
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub current: Option<DjNowPlaying>,
+        /// Playback position of the current track, in milliseconds
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub position_ms: u64,
+        /// Server time at which this state was generated (unix milliseconds)
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub server_time: u64,
+        /// Tracks which are queued up, in playback order
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub queue: Vec<DjTrack>,
+        /// Number of (valid) votes to skip the current track
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub votes: u32,
+        /// Users who have voted to skip the current track
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub voters: Vec<String>,
+        /// Users which have joined the channel
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub members: Vec<String>,
+        /// Settings of this DJ channel
+        pub settings: DjInformation,
+    }
+
+    /// Membership of the current user in a DJ channel
+    #[derive(Default)]
+    pub struct DjChannelMembers {
+        /// Id of the channel
+        #[cfg_attr(feature = "serde", serde(rename = "_id"))]
+        pub id: String,
+        /// Users which have joined the channel
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub members: Vec<String>,
     }
 
     /// Partial representation of a channel
@@ -713,6 +788,92 @@ auto_derived!(
     }
 );
 
+/// Default skip threshold for a DJ channel (half of the present members)
+pub const DJ_DEFAULT_SKIP_THRESHOLD: f32 = 0.5;
+/// Default maximum upload size for a DJ track, in megabytes
+pub const DJ_DEFAULT_MAX_FILE_MB: u32 = 50;
+/// Default maximum duration of a DJ track, in seconds
+pub const DJ_DEFAULT_MAX_TRACK_SECONDS: u32 = 900;
+/// Default maximum queue depth of a DJ channel
+pub const DJ_DEFAULT_MAX_TRACKS: u32 = 100;
+/// Default maximum total size of queued audio for a DJ channel, in bytes (20 GiB)
+pub const DJ_DEFAULT_MAX_TOTAL_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+
+/// DJ information for a channel
+///
+/// Presence of this field marks the channel as a DJ channel. This is modelled
+/// as a capability on a text channel (like voice) so that the `channel_type`
+/// enum stays unchanged for already-released clients.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "schemas", derive(JsonSchema))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct DjInformation {
+    /// Fraction of present members required to skip the current track (0.0 - 1.0)
+    pub skip_threshold: f32,
+    /// Maximum size of a single upload, in megabytes
+    pub max_file_mb: u32,
+    /// Maximum duration of a single track, in seconds
+    pub max_track_seconds: u32,
+    /// Maximum amount of tracks queued at once
+    pub max_tracks: u32,
+    /// Maximum total amount of bytes stored for this channel
+    pub max_total_bytes: u64,
+    /// Maximum amount of users which may join at once
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub max_users: Option<u32>,
+    /// Whether the DJ is currently enabled
+    pub enabled: bool,
+}
+
+impl Default for DjInformation {
+    fn default() -> Self {
+        Self {
+            skip_threshold: DJ_DEFAULT_SKIP_THRESHOLD,
+            max_file_mb: DJ_DEFAULT_MAX_FILE_MB,
+            max_track_seconds: DJ_DEFAULT_MAX_TRACK_SECONDS,
+            max_tracks: DJ_DEFAULT_MAX_TRACKS,
+            max_total_bytes: DJ_DEFAULT_MAX_TOTAL_BYTES,
+            max_users: None,
+            enabled: true,
+        }
+    }
+}
+
+// `f32` is not `Eq`, but `DjInformation` is only ever compared with `PartialEq`.
+impl Eq for DjInformation {}
+
+/// Partial update of the settings of a DJ channel
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schemas", derive(JsonSchema))]
+#[cfg_attr(feature = "validator", derive(validator::Validate))]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DataEditDjSettings {
+    /// Fraction of present members required to skip the current track (0.0 - 1.0)
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub skip_threshold: Option<f32>,
+    /// Maximum size of a single upload, in megabytes
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub max_file_mb: Option<u32>,
+    /// Maximum duration of a single track, in seconds
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub max_track_seconds: Option<u32>,
+    /// Maximum amount of tracks queued at once
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub max_tracks: Option<u32>,
+    /// Maximum total amount of bytes stored for this channel
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub max_total_bytes: Option<u64>,
+    /// Maximum amount of users which may join at once (0 removes the limit)
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub max_users: Option<u32>,
+    /// Whether the DJ is enabled
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub enabled: Option<bool>,
+}
+
+impl Eq for DataEditDjSettings {}
+
 impl Channel {
     /// Get a reference to this channel's id
     pub fn id(&self) -> &str {
@@ -732,6 +893,29 @@ impl Channel {
             Channel::TextChannel { server, .. }
             | Channel::ForumChannel { server, .. }
             | Channel::Thread { server, .. } => Some(server),
+            _ => None,
+        }
+    }
+
+    /// Gets this channel's DJ information, if it is a DJ channel
+    pub fn dj(&self) -> Option<&DjInformation> {
+        match self {
+            Channel::TextChannel { dj: Some(dj), .. } => Some(dj),
+            _ => None,
+        }
+    }
+
+    /// Whether this channel is a DJ channel which is currently enabled
+    pub fn is_dj_channel(&self) -> bool {
+        self.dj().is_some_and(|dj| dj.enabled)
+    }
+
+    /// Gets this channel's voice information, if it is a voice channel
+    pub fn voice(&self) -> Option<&VoiceInformation> {
+        match self {
+            Channel::TextChannel {
+                voice: Some(voice), ..
+            } => Some(voice),
             _ => None,
         }
     }

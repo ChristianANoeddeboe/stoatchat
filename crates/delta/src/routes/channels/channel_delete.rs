@@ -105,6 +105,9 @@ pub async fn delete(
             .await;
 
             delete_voice_channel(voice_client, &UserVoiceChannel::from_channel(&channel)).await?;
+
+            // DJ audio and playback state live outside the database
+            crate::dj::clear_channel_state(channel.id()).await;
         }
     };
 

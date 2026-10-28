@@ -232,6 +232,7 @@ impl From<crate::Channel> for Channel {
                 role_permissions,
                 nsfw,
                 voice,
+                dj,
                 slowmode,
                 default_auto_archive_minutes,
             } => Channel::TextChannel {
@@ -245,6 +246,7 @@ impl From<crate::Channel> for Channel {
                 role_permissions,
                 nsfw,
                 voice: voice.map(|voice| voice.into()),
+                dj: dj.map(|dj| dj.into()),
                 slowmode,
                 default_auto_archive_minutes,
             },
@@ -374,6 +376,7 @@ impl From<Channel> for crate::Channel {
                 role_permissions,
                 nsfw,
                 voice,
+                dj,
                 slowmode,
                 default_auto_archive_minutes,
             } => crate::Channel::TextChannel {
@@ -387,6 +390,7 @@ impl From<Channel> for crate::Channel {
                 role_permissions,
                 nsfw,
                 voice: voice.map(|voice| voice.into()),
+                dj: dj.map(|dj| dj.into()),
                 slowmode,
                 default_auto_archive_minutes,
             },
@@ -517,6 +521,8 @@ impl From<PartialChannel> for crate::PartialChannel {
             default_permissions: value.default_permissions,
             last_message_id: value.last_message_id,
             voice: value.voice.map(|voice| voice.into()),
+            // `PartialChannel` (v0) intentionally does not carry DJ settings
+            dj: None,
             slowmode: value.slowmode,
             available_tags: value.available_tags,
             require_tag: value.require_tag,
@@ -1672,6 +1678,34 @@ impl From<VoiceInformation> for crate::VoiceInformation {
     fn from(value: VoiceInformation) -> Self {
         crate::VoiceInformation {
             max_users: value.max_users,
+        }
+    }
+}
+
+impl From<crate::DjInformation> for DjInformation {
+    fn from(value: crate::DjInformation) -> Self {
+        DjInformation {
+            skip_threshold: value.skip_threshold,
+            max_file_mb: value.max_file_mb,
+            max_track_seconds: value.max_track_seconds,
+            max_tracks: value.max_tracks,
+            max_total_bytes: value.max_total_bytes,
+            max_users: value.max_users,
+            enabled: value.enabled,
+        }
+    }
+}
+
+impl From<DjInformation> for crate::DjInformation {
+    fn from(value: DjInformation) -> Self {
+        crate::DjInformation {
+            skip_threshold: value.skip_threshold,
+            max_file_mb: value.max_file_mb,
+            max_track_seconds: value.max_track_seconds,
+            max_tracks: value.max_tracks,
+            max_total_bytes: value.max_total_bytes,
+            max_users: value.max_users,
+            enabled: value.enabled,
         }
     }
 }

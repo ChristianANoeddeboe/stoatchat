@@ -42,7 +42,18 @@ futures = { workspace = true }
 chrono = { workspace = true }
 async-channel = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = [
+    "fs",
+    "macros",
+    "process",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+
+# hashing (DJ stream tokens)
+sha2 = { workspace = true }
 
 # internal util
 lettre = { workspace = true }

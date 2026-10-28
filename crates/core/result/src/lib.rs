@@ -176,6 +176,29 @@ pub enum ErrorType {
     AlreadyConnected,
     NotConnected,
     UnknownNode,
+
+    // ? DJ errors
+    NotADjChannel,
+    DjDisabled,
+    NotInDjChannel,
+    CannotJoinDjChannel,
+    CannotSendMessageToDjChannel,
+    DjQueueFull {
+        max: usize,
+    },
+    DjStorageFull {
+        max_bytes: u64,
+    },
+    DjUploadLimit {
+        max: usize,
+    },
+    DjTrackTooLong {
+        max_seconds: u32,
+    },
+    DjUnavailable,
+    DjTranscodeFailed,
+    InvalidDjToken,
+
     // ? Micro-service errors
     ProxyError,
     FileTooSmall,

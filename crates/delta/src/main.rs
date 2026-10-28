@@ -5,6 +5,7 @@ extern crate revolt_rocket_okapi;
 #[macro_use]
 extern crate serde_json;
 
+pub mod dj;
 pub mod routes;
 pub mod util;
 
@@ -72,6 +73,15 @@ pub async fn web() -> Rocket<Build> {
     // Launch background task workers
     revolt_database::tasks::start_workers(db.clone(), amqp.clone());
 
+    // DJ playback engine (single instance, no durable state)
+    let dj_engine = dj::DjEngine::new(config.hosts.api.clone());
+    dj_engine.wipe_all().await;
+    dj_engine.spawn_sweeper();
+
+    if !dj::transcode::check_available().await {
+        log::error!("DJ channel uploads are unavailable until ffmpeg is installed.");
+    }
+
     // Configure Rocket
     let rocket = rocket::build();
     let prometheus = PrometheusMetrics::new();
@@ -89,11 +99,17 @@ pub async fn web() -> Rocket<Build> {
         .manage(amqp)
         .manage(cors.clone())
         .manage(voice_client)
+        .manage(dj_engine)
         .manage(ratelimits)
         .attach(ratelimiter::RatelimitFairing)
         .attach(cors)
         .configure(rocket::Config {
-            limits: rocket::data::Limits::default().limit("string", 5.megabytes()),
+            limits: rocket::data::Limits::default()
+                .limit("string", 5.megabytes())
+                // DJ uploads are capped per channel in the handler; this is
+                // the hard ceiling for a single multipart body
+                .limit("file", 128.megabytes())
+                .limit("data-form", 128.megabytes()),
             address: Ipv4Addr::new(0, 0, 0, 0).into(),
             port: 14702,
             ip_header: Some("X-Forwarded-For".into()),

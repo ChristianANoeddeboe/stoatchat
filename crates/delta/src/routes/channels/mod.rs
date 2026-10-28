@@ -1,3 +1,4 @@
+use revolt_result::{create_error, Result};
 use revolt_rocket_okapi::revolt_okapi::openapi3::OpenApi;
 use rocket::Route;
 
@@ -5,6 +6,7 @@ mod channel_ack;
 mod channel_delete;
 mod channel_edit;
 mod channel_fetch;
+mod dj;
 mod group_add_member;
 mod group_create;
 mod group_remove_member;
@@ -72,5 +74,69 @@ pub fn routes() -> (Vec<Route>, OpenApi) {
         thread_members::add_thread_member,
         thread_members::remove_thread_member,
         thread_members::edit_thread_member,
+        dj::join::join,
+        dj::leave::leave,
+        dj::state::fetch,
+        dj::queue::queue,
+        dj::skip::skip,
+        dj::settings::edit,
     ]
+}
+
+/// Reject channels which are read-only for message-like content.
+///
+/// DJ channels do not accept messages, reactions, pins or webhooks: members
+/// join voice-style and upload tracks instead. Old clients which still render
+/// them as text channels get a clear error rather than silently accumulating
+/// messages no client will show.
+pub(crate) fn resolve_postable_channel(channel: &revolt_database::Channel) -> Result<()> {
+    if channel.dj().is_some() {
+        return Err(create_error!(CannotSendMessageToDjChannel));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use revolt_database::{Channel, DjInformation};
+    use revolt_result::ErrorType;
+
+    use super::resolve_postable_channel;
+
+    fn text_channel(dj: Option<DjInformation>) -> Channel {
+        Channel::TextChannel {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+            server: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_string(),
+            name: "music".to_string(),
+            description: None,
+            icon: None,
+            last_message_id: None,
+            default_permissions: None,
+            role_permissions: HashMap::new(),
+            nsfw: false,
+            voice: None,
+            dj,
+            slowmode: None,
+            default_auto_archive_minutes: None,
+        }
+    }
+
+    #[test]
+    fn dj_channels_reject_posts() {
+        let error = resolve_postable_channel(&text_channel(Some(DjInformation::default())))
+            .expect_err("DJ channels are read-only for messages");
+
+        assert!(matches!(
+            error.error_type,
+            ErrorType::CannotSendMessageToDjChannel
+        ));
+    }
+
+    #[test]
+    fn text_channels_accept_posts() {
+        resolve_postable_channel(&text_channel(None)).expect("text channels accept messages");
+    }
 }

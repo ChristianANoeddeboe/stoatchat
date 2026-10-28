@@ -9,6 +9,7 @@ mod bots;
 mod channels;
 mod commands;
 mod customisation;
+mod dj;
 mod invites;
 mod mfa;
 mod onboard;
@@ -33,6 +34,7 @@ pub fn mount(config: Settings, mut rocket: Rocket<Build>) -> Rocket<Build> {
             "/users" => users::routes(),
             "/bots" => bots::routes(),
             "/channels" => channels::routes(),
+            "/dj" => dj::routes(),
             "/servers" => servers::routes(),
             "/commands" => commands::routes(),
             "/invites" => invites::routes(),
@@ -55,6 +57,7 @@ pub fn mount(config: Settings, mut rocket: Rocket<Build>) -> Rocket<Build> {
             "/users" => users::routes(),
             "/bots" => bots::routes(),
             "/channels" => channels::routes(),
+            "/dj" => dj::routes(),
             "/servers" => servers::routes(),
             "/commands" => commands::routes(),
             "/invites" => invites::routes(),

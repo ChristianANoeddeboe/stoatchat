@@ -200,6 +200,13 @@ pub async fn client(db: &'static Database, stream: TcpStream, addr: SocketAddr) 
     // If this was the last session, notify other users that we just went offline.
     if last_session {
         state.broadcast_presence_change(false).await;
+
+        // DJ membership is not heartbeat based, so a closed socket removes the
+        // user from every DJ channel they had joined. The playback engine
+        // notices within a tick and starts its empty-channel grace period.
+        if let Err(error) = revolt_database::dj::remove_user_from_all_channels(&user_id).await {
+            warn!("Failed to remove {user_id} from their DJ channels: {error}");
+        }
     }
 }
 

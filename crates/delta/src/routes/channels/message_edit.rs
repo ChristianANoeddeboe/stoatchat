@@ -37,6 +37,8 @@ pub async fn edit(
 
     // Ensure we have permissions to send a message
     let channel = target.as_channel(db).await?;
+    super::resolve_postable_channel(&channel)?;
+
     let mut query = DatabasePermissionQuery::new(db, &user).channel(&channel);
     let permissions = calculate_channel_permissions(&mut query).await;
 
