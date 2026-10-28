@@ -200,4 +200,198 @@ mod tests {
 
         assert_eq!(settings.max_users, None);
     }
+
+    fn edited(data: v0::DataEditDjSettings) -> Result<v0::DjInformation, revolt_result::Error> {
+        apply_settings(&base(), data)
+    }
+
+    #[test]
+    fn accepts_every_documented_boundary() {
+        // Includes the exact lower and upper bounds of each field
+        let settings = edited(v0::DataEditDjSettings {
+            skip_threshold: Some(1.0),
+            max_file_mb: Some(128),
+            max_track_seconds: Some(3600),
+            max_tracks: Some(1000),
+            max_total_bytes: Some(1024 * 1024 * 1024 * 1024),
+            max_users: Some(1000),
+            enabled: Some(false),
+        })
+        .expect("upper bounds are valid");
+
+        assert_eq!(settings.max_file_mb, 128);
+        assert_eq!(settings.max_tracks, 1000);
+        assert!(!settings.enabled);
+
+        let settings = edited(v0::DataEditDjSettings {
+            skip_threshold: Some(0.0),
+            max_file_mb: Some(1),
+            max_track_seconds: Some(5),
+            max_tracks: Some(1),
+            max_total_bytes: Some(1024 * 1024),
+            max_users: Some(1),
+            enabled: Some(true),
+        })
+        .expect("lower bounds are valid");
+
+        assert_eq!(settings.skip_threshold, 0.0);
+        assert_eq!(settings.max_track_seconds, 5);
+        assert_eq!(settings.max_total_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn rejects_every_out_of_range_field() {
+        let cases: Vec<(&str, v0::DataEditDjSettings)> = vec![
+            (
+                "max_file_mb 0",
+                v0::DataEditDjSettings {
+                    max_file_mb: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_file_mb 129",
+                v0::DataEditDjSettings {
+                    max_file_mb: Some(129),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_track_seconds 4",
+                v0::DataEditDjSettings {
+                    max_track_seconds: Some(4),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_track_seconds 3601",
+                v0::DataEditDjSettings {
+                    max_track_seconds: Some(3601),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_tracks 0",
+                v0::DataEditDjSettings {
+                    max_tracks: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_tracks 1001",
+                v0::DataEditDjSettings {
+                    max_tracks: Some(1001),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_total_bytes below 1 MiB",
+                v0::DataEditDjSettings {
+                    max_total_bytes: Some(1024 * 1024 - 1),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_total_bytes above 1 TiB",
+                v0::DataEditDjSettings {
+                    max_total_bytes: Some(1024 * 1024 * 1024 * 1024 + 1),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_users 1001",
+                v0::DataEditDjSettings {
+                    max_users: Some(1001),
+                    ..Default::default()
+                },
+            ),
+            (
+                "skip_threshold -0.5",
+                v0::DataEditDjSettings {
+                    skip_threshold: Some(-0.5),
+                    ..Default::default()
+                },
+            ),
+            (
+                "skip_threshold NaN",
+                v0::DataEditDjSettings {
+                    skip_threshold: Some(f32::NAN),
+                    ..Default::default()
+                },
+            ),
+            (
+                "skip_threshold infinity",
+                v0::DataEditDjSettings {
+                    skip_threshold: Some(f32::INFINITY),
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        for (name, data) in cases {
+            let error = edited(data).expect_err(name);
+
+            match &error.error_type {
+                ErrorType::FailedValidation { error: message } => {
+                    assert!(
+                        message.contains(':'),
+                        "{}: message should name the field, got {:?}",
+                        name,
+                        message
+                    );
+                }
+                other => panic!("{}: unexpected error {:?}", name, other),
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_fields_which_are_not_being_edited() {
+        // A settings patch must not reset unrelated fields to their defaults
+        let current = revolt_database::DjInformation {
+            skip_threshold: 0.25,
+            max_file_mb: 7,
+            max_track_seconds: 120,
+            max_tracks: 9,
+            max_total_bytes: 5 * 1024 * 1024,
+            max_users: Some(4),
+            enabled: true,
+        };
+
+        let settings = apply_settings(
+            &current,
+            v0::DataEditDjSettings {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .expect("valid settings");
+
+        assert!(!settings.enabled);
+        assert_eq!(settings.skip_threshold, 0.25);
+        assert_eq!(settings.max_file_mb, 7);
+        assert_eq!(settings.max_track_seconds, 120);
+        assert_eq!(settings.max_tracks, 9);
+        assert_eq!(settings.max_total_bytes, 5 * 1024 * 1024);
+        assert_eq!(settings.max_users, Some(4));
+    }
+
+    #[test]
+    fn max_users_takes_precedence_over_a_zero_value() {
+        let current = revolt_database::DjInformation {
+            max_users: Some(3),
+            ..Default::default()
+        };
+
+        let settings = apply_settings(
+            &current,
+            v0::DataEditDjSettings {
+                max_users: Some(0),
+                ..Default::default()
+            },
+        )
+        .expect("zero removes the limit");
+
+        assert_eq!(settings.max_users, None);
+    }
 }

@@ -139,4 +139,72 @@ mod tests {
     fn text_channels_accept_posts() {
         resolve_postable_channel(&text_channel(None)).expect("text channels accept messages");
     }
+
+    #[test]
+    fn disabled_dj_channels_still_reject_posts() {
+        // `enabled: false` blocks joins, but the channel is still a DJ channel
+        // and must not silently become a normal text channel again.
+        let error = resolve_postable_channel(&text_channel(Some(DjInformation {
+            enabled: false,
+            ..Default::default()
+        })))
+        .expect_err("a disabled DJ channel is still read-only");
+
+        assert!(matches!(
+            error.error_type,
+            ErrorType::CannotSendMessageToDjChannel
+        ));
+    }
+
+    #[test]
+    fn non_text_channels_are_not_affected() {
+        use revolt_database::Channel;
+
+        let channels = [
+            Channel::SavedMessages {
+                id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+                user: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_string(),
+            },
+            Channel::DirectMessage {
+                id: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_string(),
+                active: true,
+                recipients: vec![
+                    "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_string(),
+                    "01ARZ3NDEKTSV4RRFFQ69G5FAY".to_string(),
+                ],
+                last_message_id: None,
+            },
+        ];
+
+        for channel in channels {
+            resolve_postable_channel(&channel)
+                .expect("only text channels can carry DJ state, so others are unaffected");
+        }
+    }
+
+    #[test]
+    fn dj_state_is_only_read_from_text_channels() {
+        use revolt_database::{Channel, VoiceInformation};
+
+        // A voice channel with a `voice` field set is not a DJ channel
+        let channel = Channel::TextChannel {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+            server: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_string(),
+            name: "voice".to_string(),
+            description: None,
+            icon: None,
+            last_message_id: None,
+            default_permissions: None,
+            role_permissions: HashMap::new(),
+            nsfw: false,
+            voice: Some(VoiceInformation { max_users: Some(4) }),
+            dj: None,
+            slowmode: None,
+            default_auto_archive_minutes: None,
+        };
+
+        assert!(channel.dj().is_none());
+        assert!(!channel.is_dj_channel());
+        resolve_postable_channel(&channel).expect("voice channels accept messages");
+    }
 }

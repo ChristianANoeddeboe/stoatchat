@@ -257,4 +257,273 @@ mod tests {
             ErrorType::DjTrackTooLong { max_seconds } if max_seconds == 10
         ));
     }
+
+    #[test]
+    fn skip_needed_rounds_fractional_results_up() {
+        // 3 * 0.34 = 1.02, ceil -> 2: a third of three members is not enough
+        assert_eq!(skip_needed(3, 0.34), 2);
+        // 7 * 0.14 = 0.98, ceil -> 1
+        assert_eq!(skip_needed(7, 0.14), 1);
+        // 2 * 0.75 = 1.5, ceil -> 2 (unanimous for two members)
+        assert_eq!(skip_needed(2, 0.75), 2);
+        // 1000 * 0.5 = 500 exactly
+        assert_eq!(skip_needed(1000, 0.5), 500);
+        // 1 * 0.0001 = 0.0001, ceil -> 1
+        assert_eq!(skip_needed(1, 0.0001), 1);
+    }
+
+    #[test]
+    fn skip_needed_never_returns_zero_for_an_empty_channel() {
+        // Nobody present must not mean "zero votes needed"
+        for threshold in [0.0, 0.25, 0.5, 1.0] {
+            assert_eq!(skip_needed(0, threshold), 1, "threshold {threshold}");
+        }
+    }
+
+    #[test]
+    fn skip_needed_clamps_infinities_and_subnormals() {
+        // Non-finite thresholds fall back to zero, i.e. a single vote
+        assert_eq!(skip_needed(5, f32::INFINITY), 1);
+        assert_eq!(skip_needed(5, f32::NEG_INFINITY), 1);
+        // Negative zero is still zero
+        assert_eq!(skip_needed(5, -0.0), 1);
+        // Smallest positive subnormal clamps nowhere, ceil lifts it to one vote
+        assert_eq!(skip_needed(5, f32::MIN_POSITIVE), 1);
+    }
+
+    #[test]
+    fn tally_threshold_one_requires_every_present_member() {
+        let present = members(&["a", "b", "c"]);
+
+        assert_eq!(tally(&members(&["a", "b"]), &present, 1.0), (2, 3, false));
+        assert_eq!(
+            tally(&members(&["a", "b", "c"]), &present, 1.0),
+            (3, 3, true)
+        );
+    }
+
+    #[test]
+    fn tally_threshold_zero_skips_on_a_single_vote() {
+        let present = members(&["a", "b", "c", "d", "e"]);
+
+        // No votes never skips
+        assert_eq!(tally(&[], &present, 0.0), (0, 1, false));
+        assert_eq!(tally(&members(&["a"]), &present, 0.0), (1, 1, true));
+    }
+
+    #[test]
+    fn tally_ignores_votes_when_every_voter_left() {
+        let voters = members(&["a", "b", "c"]);
+        let present = members(&["d", "e"]);
+
+        assert_eq!(tally(&voters, &present, 0.0), (0, 1, false));
+    }
+
+    #[test]
+    fn tally_re_evaluates_when_members_join() {
+        // One vote of two present members is enough at 0.5 ...
+        let voters = members(&["a"]);
+        assert_eq!(tally(&voters, &members(&["a", "b"]), 0.5), (1, 1, true));
+
+        // ... but the same vote is no longer enough once two members join
+        assert_eq!(
+            tally(&voters, &members(&["a", "b", "c", "d"]), 0.5),
+            (1, 2, false)
+        );
+    }
+
+    #[test]
+    fn tally_re_evaluates_when_members_leave() {
+        // Two votes of four members is not enough at 1.0 ...
+        let voters = members(&["a", "b"]);
+        assert_eq!(
+            tally(&voters, &members(&["a", "b", "c", "d"]), 1.0),
+            (2, 4, false)
+        );
+
+        // ... but becomes unanimous (and passes) when the channel halves
+        assert_eq!(tally(&voters, &members(&["a", "b"]), 1.0), (2, 2, true));
+    }
+
+    #[test]
+    fn queue_caps_member_limit_boundary() {
+        let settings = DjInformation::default();
+
+        for member_tracks in 0..MAX_TRACKS_PER_MEMBER {
+            check_queue_caps(
+                &settings,
+                QueueCaps {
+                    member_tracks,
+                    queued: 0,
+                    total_bytes: 0,
+                    new_track_bytes: 1,
+                },
+            )
+            .unwrap_or_else(|_| panic!("{member_tracks} tracks is under the cap"));
+        }
+
+        check_queue_caps(
+            &settings,
+            QueueCaps {
+                member_tracks: MAX_TRACKS_PER_MEMBER - 1,
+                queued: 0,
+                total_bytes: 0,
+                new_track_bytes: 1,
+            },
+        )
+        .expect("the last slot is usable");
+    }
+
+    #[test]
+    fn queue_caps_defaults_match_the_model() {
+        // The pure helper and the wire model must agree on the defaults, or an
+        // upload would be accepted by one and rejected by the other.
+        let settings = DjInformation::default();
+
+        assert_eq!(settings.max_tracks, 100);
+        assert_eq!(settings.max_total_bytes, 20 * 1024 * 1024 * 1024);
+        assert_eq!(settings.max_track_seconds, 900);
+    }
+
+    #[test]
+    fn queue_caps_zero_max_tracks_rejects_everything() {
+        // Settings validation clamps `max_tracks` to at least one, but the pure
+        // check must still refuse a zero depth rather than accept track one.
+        let settings = DjInformation {
+            max_tracks: 0,
+            ..Default::default()
+        };
+
+        let error = check_queue_caps(
+            &settings,
+            QueueCaps {
+                member_tracks: 0,
+                queued: 0,
+                total_bytes: 0,
+                new_track_bytes: 1,
+            },
+        )
+        .expect_err("a zero-depth queue accepts nothing");
+
+        assert!(matches!(
+            error.error_type,
+            ErrorType::DjQueueFull { max } if max == 0
+        ));
+    }
+
+    #[test]
+    fn queue_caps_last_track_of_a_one_deep_queue() {
+        let settings = DjInformation {
+            max_tracks: 1,
+            ..Default::default()
+        };
+
+        check_queue_caps(
+            &settings,
+            QueueCaps {
+                member_tracks: 0,
+                queued: 0,
+                total_bytes: 0,
+                new_track_bytes: 1,
+            },
+        )
+        .expect("the single slot is free");
+
+        assert!(check_queue_caps(
+            &settings,
+            QueueCaps {
+                member_tracks: 0,
+                queued: 1,
+                total_bytes: 0,
+                new_track_bytes: 1,
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn queue_caps_byte_arithmetic_saturates() {
+        // A near-maximum total which would overflow must be treated as full
+        let settings = DjInformation {
+            max_total_bytes: u64::MAX - 5,
+            ..Default::default()
+        };
+
+        let error = check_queue_caps(
+            &settings,
+            QueueCaps {
+                member_tracks: 0,
+                queued: 0,
+                total_bytes: u64::MAX - 1,
+                new_track_bytes: 10,
+            },
+        )
+        .expect_err("an overflowing total must be rejected");
+
+        assert!(matches!(error.error_type, ErrorType::DjStorageFull { .. }));
+
+        // Known limit: `saturating_add` clamps at u64::MAX, so at the absolute
+        // maximum ceiling a single extra byte is accepted. Settings validation
+        // caps `max_total_bytes` at 1 TiB, so this is unreachable through the
+        // API; the assertion documents the behaviour rather than fixing it.
+        check_queue_caps(
+            &DjInformation {
+                max_total_bytes: u64::MAX,
+                ..Default::default()
+            },
+            QueueCaps {
+                member_tracks: 0,
+                queued: 0,
+                total_bytes: u64::MAX,
+                new_track_bytes: 1,
+            },
+        )
+        .expect("saturating add cannot represent the overflow");
+    }
+
+    #[test]
+    fn queue_caps_reports_the_member_limit_first() {
+        // All three caps are violated; the member cap is the actionable one
+        let settings = DjInformation {
+            max_tracks: 1,
+            max_total_bytes: 1,
+            ..Default::default()
+        };
+
+        let error = check_queue_caps(
+            &settings,
+            QueueCaps {
+                member_tracks: MAX_TRACKS_PER_MEMBER,
+                queued: 10,
+                total_bytes: 1,
+                new_track_bytes: 1,
+            },
+        )
+        .expect_err("rejected");
+
+        assert!(matches!(error.error_type, ErrorType::DjUploadLimit { .. }));
+    }
+
+    #[test]
+    fn duration_zero_cap_still_allows_a_zero_length_track() {
+        let settings = DjInformation {
+            max_track_seconds: 0,
+            ..Default::default()
+        };
+
+        check_duration(&settings, 0).expect("a zero length probe fits a zero cap");
+        assert!(check_duration(&settings, 1).is_err());
+    }
+
+    #[test]
+    fn duration_check_does_not_overflow() {
+        let settings = DjInformation {
+            max_track_seconds: u32::MAX,
+            ..Default::default()
+        };
+
+        // u32::MAX seconds is about 136 years; a real track always fits
+        check_duration(&settings, 900_000).expect("well inside the limit");
+        assert!(check_duration(&settings, u64::MAX).is_err());
+    }
 }

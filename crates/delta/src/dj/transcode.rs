@@ -217,4 +217,185 @@ mod tests {
             ErrorType::DjTranscodeFailed
         ));
     }
+
+    #[test]
+    fn tolerates_surrounding_whitespace() {
+        assert_eq!(parse_probe_duration(" 12.5 \n").unwrap(), 12_500);
+        assert_eq!(parse_probe_duration("\t3.001\r\n").unwrap(), 3_001);
+    }
+
+    #[test]
+    fn rounds_milliseconds() {
+        assert_eq!(parse_probe_duration("1.0004").unwrap(), 1_000);
+        assert_eq!(parse_probe_duration("1.0006").unwrap(), 1_001);
+        assert_eq!(parse_probe_duration("0.5").unwrap(), 500);
+    }
+
+    #[test]
+    fn rejects_non_finite_and_negative_durations() {
+        for value in ["nan", "NaN", "inf", "-inf", "-1", "-0.5"] {
+            let error =
+                parse_probe_duration(value).expect_err(&format!("{value:?} must be rejected"));
+
+            assert!(
+                matches!(error.error_type, ErrorType::DjTranscodeFailed),
+                "{:?} produced {:?}",
+                value,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_scientific_notation() {
+        assert_eq!(parse_probe_duration("1e3").unwrap(), 1_000_000);
+        assert_eq!(parse_probe_duration("1.5E-3").unwrap(), 2);
+    }
+
+    #[test]
+    fn absurdly_long_durations_saturate_instead_of_wrapping() {
+        // f64 -> u64 casts saturate in Rust; a hostile probe value must not
+        // wrap around into a small, acceptable duration.
+        assert_eq!(parse_probe_duration("1e300").unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn sub_millisecond_durations_round_to_zero() {
+        // Documents the lower bound: ffprobe reporting 0.4 ms yields 0 ms,
+        // which then passes the duration cap check.
+        assert_eq!(parse_probe_duration("0.0004").unwrap(), 0);
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dj-transcode-{tag}-{}",
+            ulid::Ulid::new().to_string().to_lowercase()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    /// Whether the configured ffmpeg binary can actually run
+    async fn ffmpeg_works() -> bool {
+        match Command::new(ffmpeg_bin())
+            .arg("-version")
+            .stdin(Stdio::null())
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => true,
+            _ => {
+                eprintln!("skipping DJ transcode test: ffmpeg is not available");
+                false
+            }
+        }
+    }
+
+    /// Render `seconds` of a sine wave to a WAV file
+    async fn render_sine(path: &Path, seconds: u32) {
+        let input = format!("sine=frequency=440:duration={seconds}");
+
+        let status = Command::new(ffmpeg_bin())
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg(input)
+            .args(["-ar", "44100"])
+            .arg(path)
+            .stdin(Stdio::null())
+            .status()
+            .await
+            .expect("spawn ffmpeg");
+
+        assert!(status.success(), "failed to render test audio");
+    }
+
+    #[tokio::test]
+    async fn real_ffmpeg_transcodes_and_caps_duration() {
+        if !ffmpeg_works().await {
+            return;
+        }
+
+        let dir = temp_dir("cap");
+        let source = dir.join("sine.wav");
+
+        render_sine(&source, 3).await;
+
+        // A 1 s cap truncates the 3 s source
+        let capped = dir.join("capped.mp3");
+        to_mp3(&source, &capped, 1).await.expect("transcode");
+        let duration = probe_duration_ms(&capped).await.expect("probe capped");
+
+        assert!(
+            (900..=1150).contains(&duration),
+            "expected the 1 s cap to apply, probed {} ms",
+            duration
+        );
+
+        // A 10 s cap keeps the whole track
+        let full = dir.join("full.mp3");
+        to_mp3(&source, &full, 10).await.expect("transcode");
+        let duration = probe_duration_ms(&full).await.expect("probe full");
+
+        assert!(
+            (2_850..=3_150).contains(&duration),
+            "expected the full 3 s track, probed {} ms",
+            duration
+        );
+
+        // The output really is an MP3, so `NamedFile`/media players can demux it
+        let header = std::fs::read(&full).expect("read output");
+        assert!(header.len() > 128, "output looks empty");
+        assert!(
+            header.starts_with(b"ID3") || header[0] == 0xff,
+            "output is not an MP3 (first byte {:#x})",
+            header[0]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn real_ffmpeg_rejects_non_audio_input() {
+        if !ffmpeg_works().await {
+            return;
+        }
+
+        let dir = temp_dir("bad");
+        let source = dir.join("not-audio.txt");
+        let output = dir.join("out.mp3");
+
+        std::fs::write(&source, b"this is definitely not audio").expect("write");
+
+        let error = to_mp3(&source, &output, 10)
+            .await
+            .expect_err("non-audio input must fail");
+
+        assert!(matches!(
+            error.error_type,
+            revolt_result::ErrorType::DjTranscodeFailed
+        ));
+        assert!(!output.exists(), "no file should be left behind");
+
+        // Probing a non-audio file fails rather than reporting a bogus duration
+        assert!(probe_duration_ms(&source).await.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ffmpeg_availability_check_matches_the_binary() {
+        if !ffmpeg_works().await {
+            return;
+        }
+
+        assert!(check_available().await, "check_available should see ffmpeg");
+    }
 }

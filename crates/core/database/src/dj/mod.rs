@@ -23,6 +23,12 @@ use revolt_result::{create_error, Result, ToRevoltError};
 pub mod skip;
 pub use skip::*;
 
+#[cfg(test)]
+mod redis_tests;
+
+#[cfg(test)]
+mod serde_tests;
+
 /// Prefix shared by every key owned by this module
 pub const KEY_PREFIX: &str = "dj_";
 

@@ -217,4 +217,110 @@ mod tests {
 
         assert!(url.starts_with("https://api.example.com/dj/chan/stream?token="));
     }
+
+    #[test]
+    fn stream_url_signature_verifies_and_carries_the_track() {
+        let url = stream_url("https://api.example.com", "chan", "track-1", 10);
+        let token = url.split_once("token=").expect("token in url").1;
+
+        assert_eq!(verify("chan", token).as_deref(), Some("track-1"));
+        // The URL embeds the channel in the path, so a token is not portable
+        assert!(verify("chan2", token).is_none());
+    }
+
+    #[test]
+    fn token_rejects_a_single_flipped_mac_nibble() {
+        let token = sign("channel", "track", future(60));
+
+        for index in [token.len() - 1, token.len() - 32, token.len() - 64] {
+            let mut bytes = token.clone().into_bytes();
+            bytes[index] = if bytes[index] == b'0' { b'1' } else { b'0' };
+
+            let forged = String::from_utf8(bytes).expect("still utf-8");
+            assert_ne!(forged, token);
+            assert!(
+                verify("channel", &forged).is_none(),
+                "forged mac at byte {} was accepted",
+                index
+            );
+        }
+    }
+
+    #[test]
+    fn token_rejects_a_truncated_or_extended_mac() {
+        let token = sign("channel", "track", future(60));
+
+        let truncated = &token[..token.len() - 1];
+        assert!(verify("channel", truncated).is_none());
+
+        let extended = format!("{token}00");
+        assert!(verify("channel", &extended).is_none());
+    }
+
+    #[test]
+    fn token_rejects_extra_components() {
+        let token = sign("channel", "track", future(60));
+        let forged = format!("{token}.1");
+
+        assert!(verify("channel", &forged).is_none());
+    }
+
+    #[test]
+    fn token_expiry_is_only_accepted_in_the_future() {
+        assert!(verify("channel", &sign("channel", "track", unix_secs() + 2)).is_some());
+        assert!(verify("channel", &sign("channel", "track", unix_secs() - 1)).is_none());
+        // Epoch zero is long expired
+        assert!(verify("channel", &sign("channel", "track", 0)).is_none());
+    }
+
+    #[test]
+    fn token_rejects_a_negative_expiry() {
+        // "-1" does not parse as u64 and must not be treated as "no expiry"
+        let structure = sign("channel", "track", 1000);
+        let rest = structure.splitn(2, '.').nth(1).expect("track and mac");
+        let forged = format!("-1.{rest}");
+
+        assert!(verify("channel", &forged).is_none());
+    }
+
+    #[test]
+    fn track_id_length_boundary() {
+        let allowed = "a".repeat(128);
+        let rejected = "a".repeat(129);
+
+        assert!(verify("channel", &sign("channel", &allowed, future(60))).is_some());
+        assert!(verify("channel", &sign("channel", &rejected, future(60))).is_none());
+    }
+
+    #[test]
+    fn track_ids_with_path_separators_never_verify() {
+        for id in ["../x", "a/b", "a\\b", "a.b", "a b", "", "%2e%2e"] {
+            let token = sign("channel", id, future(60));
+            assert!(
+                verify("channel", &token).is_none(),
+                "unsafe track id {:?} was accepted",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn hmac_hashes_keys_longer_than_the_block_size() {
+        // RFC 4231 test case 6: a 131 byte key is hashed down to 32 bytes
+        let mac = hmac_sha256(
+            &[0xaa; 131],
+            b"Test Using Larger Than Block-Size Key - Hash Key First",
+        );
+
+        assert_eq!(
+            hex(&mac),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+
+    #[test]
+    fn token_ttl_covers_the_track_plus_the_margin() {
+        assert_eq!(token_ttl(900), Duration::from_secs(960));
+        assert_eq!(token_ttl(0), Duration::from_secs(TOKEN_TTL_MARGIN_SECS));
+    }
 }

@@ -13,6 +13,9 @@ pub mod paths;
 pub mod token;
 pub mod transcode;
 
+#[cfg(test)]
+mod engine_tests;
+
 use std::sync::Arc;
 use std::time::Duration;
 
