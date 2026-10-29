@@ -100,6 +100,9 @@ impl IntoResponse for Error {
             ErrorType::DjTrackTooLong { .. } => StatusCode::BAD_REQUEST,
             ErrorType::DjUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorType::DjTranscodeFailed => StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorType::DjYoutubeUnsupported => StatusCode::BAD_REQUEST,
+            ErrorType::DjYoutubeFailed => StatusCode::BAD_GATEWAY,
+            ErrorType::DjYoutubeUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorType::InvalidDjToken => StatusCode::FORBIDDEN,
 
             ErrorType::InvalidFlagValue => StatusCode::BAD_REQUEST,

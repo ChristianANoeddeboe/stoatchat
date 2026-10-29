@@ -197,6 +197,12 @@ pub enum ErrorType {
     },
     DjUnavailable,
     DjTranscodeFailed,
+    /// The queued link is not a supported single YouTube video
+    DjYoutubeUnsupported,
+    /// yt-dlp could not read or download the linked video
+    DjYoutubeFailed,
+    /// yt-dlp is not available on this instance
+    DjYoutubeUnavailable,
     InvalidDjToken,
 
     // ? Micro-service errors

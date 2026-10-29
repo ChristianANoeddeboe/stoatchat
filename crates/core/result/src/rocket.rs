@@ -102,6 +102,9 @@ impl<'r> Responder<'r, 'static> for Error {
             ErrorType::DjTrackTooLong { .. } => Status::BadRequest,
             ErrorType::DjUnavailable => Status::ServiceUnavailable,
             ErrorType::DjTranscodeFailed => Status::UnprocessableEntity,
+            ErrorType::DjYoutubeUnsupported => Status::BadRequest,
+            ErrorType::DjYoutubeFailed => Status::BadGateway,
+            ErrorType::DjYoutubeUnavailable => Status::ServiceUnavailable,
             ErrorType::InvalidDjToken => Status::Forbidden,
 
             ErrorType::FeatureDisabled { .. } => Status::BadRequest,
