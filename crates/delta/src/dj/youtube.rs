@@ -231,6 +231,10 @@ fn metadata_args(url: &str) -> Vec<OsString> {
 }
 
 /// Arguments for the audio download
+///
+/// yt-dlp writes to `<stem>.<ext>.part` and renames on success, so a download
+/// which aborts (network failure, `--max-filesize`, timeout) never leaves a
+/// truncated file under the name the scan below accepts.
 fn download_args(url: &str, max_bytes: u64, output: &Path) -> Vec<OsString> {
     let args: Vec<OsString> = vec![
         "--ignore-config".to_string(),
@@ -245,7 +249,6 @@ fn download_args(url: &str, max_bytes: u64, output: &Path) -> Vec<OsString> {
         max_bytes.to_string(),
         "--no-progress".to_string(),
         "--no-warnings".to_string(),
-        "--no-part".to_string(),
         "--socket-timeout".to_string(),
         "15".to_string(),
         "-o".to_string(),
@@ -509,17 +512,27 @@ impl YtDlp {
                 stderr_tail(&output.stderr, 512)
             );
 
+            remove_staged(directory, stem).await;
+
             return Err(create_error!(DjYoutubeFailed));
         }
 
-        let downloaded = find_downloaded(directory, stem).await?;
+        // yt-dlp exits 0 after refusing a file over `--max-filesize`, so a
+        // missing output is a failure rather than something to transcode.
+        let downloaded = match find_downloaded(directory, stem).await {
+            Ok(downloaded) => downloaded,
+            Err(error) => {
+                remove_staged(directory, stem).await;
+                return Err(error);
+            }
+        };
         let len = tokio::fs::metadata(&downloaded)
             .await
             .map(|meta| meta.len())
             .unwrap_or_default();
 
         if len == 0 {
-            let _ = tokio::fs::remove_file(&downloaded).await;
+            remove_staged(directory, stem).await;
             log::warn!("yt-dlp produced an empty file for {canonical}");
 
             return Err(create_error!(DjYoutubeFailed));
@@ -582,6 +595,35 @@ pub async fn download_audio(
     YtDlp::from_env()
         .download(video, directory, stem, max_bytes)
         .await
+}
+
+/// Remove every file `yt-dlp` may have staged for `stem`
+///
+/// A failed or refused download must not leave audio behind for the sweeper to
+/// find later, and a request which failed has no reason to keep it.
+async fn remove_staged(directory: &Path, stem: &str) {
+    let prefix = format!("{stem}.");
+    let Ok(mut entries) = tokio::fs::read_dir(directory).await else {
+        return;
+    };
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+
+        if let Err(error) = tokio::fs::remove_file(entry.path()).await {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "Failed to remove staged DJ download {}: {error}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
 }
 
 /// Find the file `yt-dlp` produced for `stem`
@@ -857,6 +899,10 @@ mod tests {
 
         assert!(!rendered.iter().any(|arg| arg.contains("list=")));
         assert!(!rendered.iter().any(|arg| arg.starts_with("--exec")));
+
+        // `--no-part` would write straight to the final name, where an aborted
+        // download would look like a complete, but truncated, track
+        assert!(!rendered.iter().any(|arg| arg == "--no-part"));
     }
 
     #[test]
@@ -1019,6 +1065,44 @@ mod tests {
             "unexpected {:?}",
             error.error_type
         );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[tokio::test]
+    async fn a_partial_download_is_never_mistaken_for_a_track() {
+        let directory = std::env::temp_dir().join(format!("dj-ytdlp-scan-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&directory).expect("temp dir");
+
+        let staging = directory.join("1-abc.source.webm.part");
+        let sidecar = directory.join("1-abc.source.webm.ytdl");
+        let other = directory.join("2-xyz.source.webm");
+
+        std::fs::write(&staging, b"partial").expect("write");
+        std::fs::write(&sidecar, b"sidecar").expect("write");
+        std::fs::write(&other, b"other stem").expect("write");
+
+        // Neither a `.part` nor a sidecar is a finished download
+        assert!(find_downloaded(&directory, "1-abc.source").await.is_err());
+
+        let finished = directory.join("1-abc.source.webm");
+        std::fs::write(&finished, b"audio").expect("write");
+
+        assert_eq!(
+            find_downloaded(&directory, "1-abc.source")
+                .await
+                .expect("finished download"),
+            finished
+        );
+
+        // Cleanup only touches the stem it was given
+        remove_staged(&directory, "1-abc.source").await;
+
+        assert!(!finished.exists());
+        assert!(!staging.exists());
+        assert!(!sidecar.exists());
+        assert!(other.exists(), "another request's download must survive");
+        assert!(directory.exists(), "the channel directory must survive");
 
         let _ = std::fs::remove_dir_all(&directory);
     }
