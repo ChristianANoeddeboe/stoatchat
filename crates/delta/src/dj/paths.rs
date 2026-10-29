@@ -105,11 +105,26 @@ pub async fn wipe_dir() {
     let wiped = dir.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        match std::fs::remove_dir_all(&wiped) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }?;
+        // Clear the *contents* rather than removing the directory itself:
+        // DJ_DIR is owned by the runtime user, but its parent (/var/lib/revolt)
+        // belongs to root, so `remove_dir_all(DJ_DIR)` fails with EACCES in the
+        // deployed container even though DJ_DIR is writable.
+        match std::fs::read_dir(&wiped) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry?;
+                    let path = entry.path();
+
+                    if path.is_dir() {
+                        std::fs::remove_dir_all(&path)?;
+                    } else {
+                        std::fs::remove_file(&path)?;
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
 
         std::fs::create_dir_all(&wiped)
     })
