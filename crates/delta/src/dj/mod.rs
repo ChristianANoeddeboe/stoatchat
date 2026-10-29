@@ -12,6 +12,7 @@
 pub mod paths;
 pub mod token;
 pub mod transcode;
+pub mod youtube;
 
 #[cfg(test)]
 mod engine_tests;
