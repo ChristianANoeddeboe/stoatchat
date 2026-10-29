@@ -10,14 +10,21 @@ FROM debian:12 AS debian
 FROM debian:12-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
+    && curl -fsSL --retry 3 \
+        https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux \
+        -o /usr/local/bin/yt-dlp \
+    && chmod 0755 /usr/local/bin/yt-dlp \
+    && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /home/rust/src/target/release/revolt-delta ./
 COPY --from=debian /usr/bin/uname /usr/bin/uname
 
-# Fail the build loudly if ffmpeg is missing from the image
-RUN ffmpeg -version > /dev/null && ffprobe -version > /dev/null
+# Fail the build loudly if ffmpeg, ffprobe or yt-dlp is missing from the image
+RUN ffmpeg -version > /dev/null \
+    && ffprobe -version > /dev/null \
+    && yt-dlp --version > /dev/null
 
 # Storage for DJ audio uploads (unencrypted, deleted after playback)
 ENV DJ_DIR=/var/lib/revolt/dj

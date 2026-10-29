@@ -85,6 +85,12 @@ pub async fn web() -> Rocket<Build> {
         log::error!("DJ channel uploads are unavailable until ffmpeg is installed.");
     }
 
+    // YouTube links need yt-dlp on top of ffmpeg. Not fatal: uploads and
+    // playback keep working, only link queueing is refused.
+    if !dj::youtube::check_available().await {
+        log::error!("DJ YouTube links are unavailable until yt-dlp is installed.");
+    }
+
     // Configure Rocket
     let rocket = rocket::build();
     let prometheus = PrometheusMetrics::new();
