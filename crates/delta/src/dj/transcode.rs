@@ -125,6 +125,10 @@ pub async fn to_mp3(input: &Path, output: &Path, max_seconds: u32) -> Result<()>
         .arg("192k")
         .arg("-t")
         .arg(max_seconds.to_string())
+        // The caller stages to `<id>.mp3.part`, so the extension alone cannot
+        // tell ffmpeg which muxer to use. Pin it explicitly.
+        .arg("-f")
+        .arg("mp3")
         .arg(output)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -378,6 +382,35 @@ mod tests {
 
         // The output really is an MP3, so `NamedFile`/media players can demux it
         let header = std::fs::read(&full).expect("read output");
+        assert!(header.len() > 128, "output looks empty");
+        assert!(
+            header.starts_with(b"ID3") || header[0] == 0xff,
+            "output is not an MP3 (first byte {:#x})",
+            header[0]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn real_ffmpeg_accepts_a_part_staging_path() {
+        if !ffmpeg_works().await {
+            return;
+        }
+
+        let dir = temp_dir("part");
+        let source = dir.join("sine.wav");
+        render_sine(&source, 1).await;
+
+        // The upload handler stages to `<id>.mp3.part`. Without an explicit
+        // `-f mp3`, ffmpeg cannot infer a muxer from the `.part` extension and
+        // fails with "Unable to find a suitable output format".
+        let output = dir.join("track.mp3.part");
+        to_mp3(&source, &output, 10)
+            .await
+            .expect("transcode to .mp3.part");
+
+        let header = std::fs::read(&output).expect("read staged output");
         assert!(header.len() > 128, "output looks empty");
         assert!(
             header.starts_with(b"ID3") || header[0] == 0xff,
