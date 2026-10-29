@@ -49,12 +49,12 @@ const MAX_UPLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const MULTIPART_OVERHEAD_BYTES: u64 = 64 * 1024;
 
 /// Maximum amount of characters kept from a track title
-const MAX_TITLE_CHARS: usize = 100;
+pub(super) const MAX_TITLE_CHARS: usize = 100;
 
 static UPLOAD_LOCKS: OnceCell<DashMap<String, Arc<Mutex<()>>>> = OnceCell::new();
 static UPLOAD_SLOTS: OnceCell<Arc<Semaphore>> = OnceCell::new();
 
-fn upload_lock(channel: &str) -> Arc<Mutex<()>> {
+pub(super) fn upload_lock(channel: &str) -> Arc<Mutex<()>> {
     UPLOAD_LOCKS
         .get_or_init(DashMap::new)
         .entry(channel.to_string())
@@ -357,14 +357,14 @@ async fn upload(
 ///
 /// The suffix is deliberately not `.mp3`: nothing (queue, keep set, client)
 /// must ever pick a half-written file up.
-fn partial_path(destination: &Path) -> PathBuf {
+pub(super) fn partial_path(destination: &Path) -> PathBuf {
     let mut path = destination.as_os_str().to_os_string();
     path.push(".part");
     PathBuf::from(path)
 }
 
 /// Maximum size of an upload, in bytes, after clamping to the user's tier
-async fn max_upload_bytes(settings: &v0::DjInformation, user: &User) -> u64 {
+pub(super) async fn max_upload_bytes(settings: &v0::DjInformation, user: &User) -> u64 {
     const MIB: u64 = 1024 * 1024;
 
     let channel_limit = (settings.max_file_mb as u64 * MIB).min(MAX_UPLOAD_BYTES);
@@ -398,12 +398,12 @@ fn resolve_title(title: Option<String>, file: &TempFile<'_>) -> String {
 }
 
 /// Bound a title to [`MAX_TITLE_CHARS`] characters, on a character boundary
-fn truncate_title(title: &str) -> String {
+pub(super) fn truncate_title(title: &str) -> String {
     title.chars().take(MAX_TITLE_CHARS).collect::<String>()
 }
 
 /// Amount of tracks the user has queued or is currently playing
-fn member_track_count(
+pub(super) fn member_track_count(
     queue: &[v0::DjTrack],
     current: Option<&v0::DjNowPlaying>,
     user: &str,
@@ -417,7 +417,7 @@ fn member_track_count(
     queued + playing
 }
 
-async fn directory_size(dir: &Path) -> u64 {
+pub(super) async fn directory_size(dir: &Path) -> u64 {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         return 0;
     };
@@ -439,7 +439,7 @@ async fn directory_size(dir: &Path) -> u64 {
 ///
 /// Deliberately not `{:?}` of the error type: that leaks Rust type names and
 /// their internal fields to the client.
-fn upload_failure_reason(error: &ErrorType) -> String {
+pub(super) fn upload_failure_reason(error: &ErrorType) -> String {
     match error {
         ErrorType::FileTooLarge { .. } => "the file is larger than this channel allows",
         ErrorType::FileTooSmall => "the file is empty",
@@ -449,13 +449,16 @@ fn upload_failure_reason(error: &ErrorType) -> String {
         ErrorType::DjStorageFull { .. } => "the channel has no storage left",
         ErrorType::DjTranscodeFailed => "the file could not be converted to audio",
         ErrorType::DjUnavailable => "DJ uploads are temporarily unavailable",
+        ErrorType::DjYoutubeUnsupported => "the link is not a single YouTube video",
+        ErrorType::DjYoutubeFailed => "the linked video could not be downloaded",
+        ErrorType::DjYoutubeUnavailable => "YouTube downloads are unavailable on this server",
         _ => "the upload was rejected",
     }
     .to_string()
 }
 
 /// Delete a partially written file and tell the uploader why it was rejected
-async fn upload_failed(channel: &str, user: &str, path: &PathBuf, error: Error) -> Error {
+pub(super) async fn upload_failed(channel: &str, user: &str, path: &Path, error: Error) -> Error {
     if let Err(error) = tokio::fs::remove_file(path).await {
         if error.kind() != std::io::ErrorKind::NotFound {
             log::warn!(

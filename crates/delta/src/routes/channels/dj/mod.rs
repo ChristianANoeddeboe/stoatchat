@@ -9,6 +9,7 @@
 pub mod join;
 pub mod leave;
 pub mod queue;
+pub mod queue_url;
 pub mod settings;
 pub mod skip;
 pub mod state;

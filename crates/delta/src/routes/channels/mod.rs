@@ -78,6 +78,7 @@ pub fn routes() -> (Vec<Route>, OpenApi) {
         dj::leave::leave,
         dj::state::fetch,
         dj::queue::queue,
+        dj::queue_url::queue_url,
         dj::skip::skip,
         dj::settings::edit,
         dj::settings::enable,
