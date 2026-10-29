@@ -249,11 +249,7 @@ async fn enqueue(
 }
 
 /// Title for a link: the requested title, else the video title, else the id
-fn resolve_title(
-    requested: Option<&str>,
-    metadata: &youtube::VideoMetadata,
-    id: &str,
-) -> String {
+fn resolve_title(requested: Option<&str>, metadata: &youtube::VideoMetadata, id: &str) -> String {
     truncate_title(&youtube::resolve_title(requested, metadata, id))
 }
 

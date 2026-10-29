@@ -135,7 +135,9 @@ pub fn parse_video_url(input: &str) -> Result<VideoId> {
     // Whitespace or control characters have no business in a URL, and refusing
     // them early keeps the parser from having to care about them at all.
     if input.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return Err(unsupported("link contains whitespace or control characters"));
+        return Err(unsupported(
+            "link contains whitespace or control characters",
+        ));
     }
 
     let url = Url::parse(input).map_err(|_| unsupported("not a URL"))?;
@@ -451,14 +453,16 @@ impl YtDlp {
             })?
             .map_err(|_| create_error!(DjYoutubeUnavailable))?;
 
-        tokio::fs::create_dir_all(directory).await.map_err(|error| {
-            log::error!(
-                "Failed to create DJ download directory {}: {error}",
-                directory.display()
-            );
+        tokio::fs::create_dir_all(directory)
+            .await
+            .map_err(|error| {
+                log::error!(
+                    "Failed to create DJ download directory {}: {error}",
+                    directory.display()
+                );
 
-            create_error!(DjUnavailable)
-        })?;
+                create_error!(DjUnavailable)
+            })?;
 
         let canonical = video.canonical_url();
         let template = directory.join(format!("{stem}.%(ext)s"));
@@ -735,11 +739,7 @@ mod tests {
             "",
             "   ",
         ] {
-            assert!(
-                parse_video_url(url).is_err(),
-                "{:?} must be rejected",
-                url
-            );
+            assert!(parse_video_url(url).is_err(), "{:?} must be rejected", url);
         }
     }
 
@@ -752,11 +752,7 @@ mod tests {
             "https://user:pass@www.youtube.com/watch?v=bhupEBurUQI",
             "https://www.youtube.com:8443/watch?v=bhupEBurUQI",
         ] {
-            assert!(
-                parse_video_url(url).is_err(),
-                "{:?} must be rejected",
-                url
-            );
+            assert!(parse_video_url(url).is_err(), "{:?} must be rejected", url);
         }
     }
 
@@ -775,11 +771,7 @@ mod tests {
                 format!("https://www.youtube.com/watch?v={id}"),
                 format!("https://youtu.be/{id}"),
             ] {
-                assert!(
-                    parse_video_url(&url).is_err(),
-                    "{:?} must be rejected",
-                    url
-                );
+                assert!(parse_video_url(&url).is_err(), "{:?} must be rejected", url);
             }
         }
     }
@@ -981,6 +973,54 @@ mod tests {
         assert!(tail.len() <= 100);
         assert!(tail.chars().all(|c| c == 'é'));
         assert_eq!(stderr_tail(b"  short  ", 100), "short");
+    }
+
+    /// End-to-end check against a real video, only when explicitly enabled
+    ///
+    /// `DJ_YTDLP_NETWORK_TEST=1` is required: neither CI nor a local test run
+    /// may depend on YouTube being reachable, or on yt-dlp being installed.
+    #[tokio::test]
+    async fn real_ytdlp_reads_a_video_when_enabled() {
+        if std::env::var("DJ_YTDLP_NETWORK_TEST").ok().as_deref() != Some("1") {
+            eprintln!("skipping the real yt-dlp test; set DJ_YTDLP_NETWORK_TEST=1");
+            return;
+        }
+
+        let ytdlp = YtDlp::from_env();
+
+        if ytdlp.version().await.is_none() {
+            eprintln!("skipping the real yt-dlp test; yt-dlp is not installed");
+            return;
+        }
+
+        let video =
+            parse_video_url(&format!("https://www.youtube.com/watch?v={ID}")).expect("valid link");
+
+        let metadata = ytdlp.metadata(&video).await.expect("metadata");
+        assert!(metadata.title.is_some(), "a real video has a title");
+        assert!(
+            metadata.duration_ms.unwrap_or_default() > 0,
+            "a real video has a duration"
+        );
+
+        // A 1 KiB cap must refuse the download rather than fill the disk
+        let directory = std::env::temp_dir().join(format!("dj-ytdlp-{}", ulid::Ulid::new()));
+
+        let error = ytdlp
+            .download(&video, &directory, "cap", 1024)
+            .await
+            .expect_err("1 KiB must not be enough for a video");
+
+        assert!(
+            matches!(
+                error.error_type,
+                ErrorType::FileTooLarge { .. } | ErrorType::DjYoutubeFailed
+            ),
+            "unexpected {:?}",
+            error.error_type
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[tokio::test]
