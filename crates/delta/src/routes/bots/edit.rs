@@ -25,7 +25,10 @@ pub async fn edit_bot(
     })?;
 
     let mut bot = bot_id.as_bot(db).await?;
-    if bot.owner != user.id {
+    // The owner edits its bot, and a bot may refresh its own profile block
+    // (usage limits are published by the bot itself, which authenticates as
+    // its own user id, never as the human owner).
+    if bot.owner != user.id && bot.id != user.id {
         return Err(create_error!(NotFound));
     }
 
@@ -37,6 +40,7 @@ pub async fn edit_bot(
     if data.public.is_none()
         && data.analytics.is_none()
         && data.interactions_url.is_none()
+        && data.usage.is_none()
         && data.remove.is_empty()
     {
         return Ok(Json(v0::BotWithUserResponse {
@@ -49,6 +53,7 @@ pub async fn edit_bot(
         public,
         analytics,
         interactions_url,
+        usage,
         remove,
         ..
     } = data;
@@ -57,6 +62,7 @@ pub async fn edit_bot(
         public,
         analytics,
         interactions_url,
+        usage: usage.map(Into::into),
         ..Default::default()
     };
 

@@ -34,6 +34,65 @@ impl From<crate::Bot> for Bot {
             terms_of_service_url: value.terms_of_service_url,
             privacy_policy_url: value.privacy_policy_url,
             flags: value.flags.unwrap_or_default() as u32,
+            usage: value.usage.map(Into::into),
+        }
+    }
+}
+
+impl From<crate::BotUsage> for BotUsage {
+    fn from(value: crate::BotUsage) -> Self {
+        BotUsage {
+            provider: value.provider,
+            model: value.model,
+            plan: value.plan,
+            updated_at: value.updated_at,
+            windows: value.windows.into_iter().map(Into::into).collect(),
+            local: value.local.into_iter().map(Into::into).collect(),
+            notes: value.notes,
+        }
+    }
+}
+
+impl From<BotUsage> for crate::BotUsage {
+    fn from(value: BotUsage) -> Self {
+        crate::BotUsage {
+            provider: value.provider,
+            model: value.model,
+            plan: value.plan,
+            updated_at: value.updated_at,
+            windows: value.windows.into_iter().map(Into::into).collect(),
+            local: value.local.into_iter().map(Into::into).collect(),
+            notes: value.notes,
+        }
+    }
+}
+
+impl From<crate::BotUsageWindow> for BotUsageWindow {
+    fn from(value: crate::BotUsageWindow) -> Self {
+        BotUsageWindow {
+            label: value.label,
+            period: value.period,
+            used_percent: value.used_percent,
+            resets_at: value.resets_at,
+            detail: value.detail,
+            tokens: value.tokens,
+            calls: value.calls,
+            cost_cents: value.cost_cents,
+        }
+    }
+}
+
+impl From<BotUsageWindow> for crate::BotUsageWindow {
+    fn from(value: BotUsageWindow) -> Self {
+        crate::BotUsageWindow {
+            label: value.label,
+            period: value.period,
+            used_percent: value.used_percent,
+            resets_at: value.resets_at,
+            detail: value.detail,
+            tokens: value.tokens,
+            calls: value.calls,
+            cost_cents: value.cost_cents,
         }
     }
 }

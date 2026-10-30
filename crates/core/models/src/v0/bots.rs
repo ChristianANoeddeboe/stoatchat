@@ -54,6 +54,72 @@ auto_derived!(
             serde(skip_serializing_if = "crate::if_zero_u32", default)
         )]
         pub flags: u32,
+
+        /// Usage limits this bot reports for its inference account
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub usage: Option<BotUsage>,
+    }
+
+    /// A single usage window: a provider quota or one of the bot's own
+    /// consumption windows.
+    #[derive(Default)]
+    pub struct BotUsageWindow {
+        /// Human readable label, e.g. "Current week"
+        pub label: String,
+        /// Machine readable period: session, rolling, daily, weekly, monthly, other
+        #[cfg_attr(
+            feature = "serde",
+            serde(skip_serializing_if = "String::is_empty", default)
+        )]
+        pub period: String,
+
+        /// Percent of the window consumed (0-100)
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub used_percent: Option<u16>,
+        /// RFC3339 instant at which this window resets
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub resets_at: Option<String>,
+        /// Free-form detail, e.g. "$8.54 of $10.00 remaining"
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub detail: Option<String>,
+
+        /// Tokens consumed inside this window (bot-local windows)
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub tokens: Option<u64>,
+        /// API calls made inside this window (bot-local windows)
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub calls: Option<u64>,
+        /// Spend inside this window, in US cents (bot-local windows)
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub cost_cents: Option<u32>,
+    }
+
+    /// Usage limits as published by the bot itself.
+    #[derive(Default)]
+    pub struct BotUsage {
+        /// Inference provider the bot runs on, e.g. "opencode-go"
+        pub provider: String,
+        /// Model the bot currently runs
+        #[cfg_attr(
+            feature = "serde",
+            serde(skip_serializing_if = "String::is_empty", default)
+        )]
+        pub model: String,
+        /// Plan name when the provider reports one
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub plan: Option<String>,
+        /// RFC3339 instant this block was last refreshed
+        pub updated_at: String,
+
+        /// Quota windows reported by the provider (with reset times)
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub windows: Vec<BotUsageWindow>,
+        /// The bot's own recent consumption (today / week / month)
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub local: Vec<BotUsageWindow>,
+        /// Extra notes, e.g. "limits unavailable for this provider"
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub notes: Vec<String>,
     }
 
     /// Optional fields on bot object
@@ -131,6 +197,9 @@ auto_derived!(
         /// Interactions URL
         #[cfg_attr(feature = "validator", validate(length(min = 1, max = 2048)))]
         pub interactions_url: Option<String>,
+        /// Usage limits this bot reports for its inference account
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        pub usage: Option<BotUsage>,
         /// Fields to remove from bot object
         #[cfg_attr(feature = "serde", serde(default))]
         pub remove: Vec<FieldsBot>,

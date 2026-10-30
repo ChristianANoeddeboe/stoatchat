@@ -3,6 +3,8 @@ use ulid::Ulid;
 
 use crate::{events::client::EventV1, BotInformation, Database, PartialUser, User};
 
+use super::usage::BotUsage;
+
 auto_derived_partial!(
     /// Bot
     pub struct Bot {
@@ -38,6 +40,10 @@ auto_derived_partial!(
         /// Enum of bot flags
         #[serde(skip_serializing_if = "Option::is_none")]
         pub flags: Option<i32>,
+
+        /// Usage limits this bot reports for its inference account
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub usage: Option<BotUsage>,
     },
     "PartialBot"
 );
@@ -64,6 +70,7 @@ impl Default for Bot {
             terms_of_service_url: Default::default(),
             privacy_policy_url: Default::default(),
             flags: Default::default(),
+            usage: Default::default(),
         }
     }
 }
